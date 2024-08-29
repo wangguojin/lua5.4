@@ -38,6 +38,7 @@
 /*
 ** these libs are loaded by lua.c and are readily available to any Lua
 ** program
+** 执行各自的库初始化，会在_LOADED表中标记是否已经加载过，下面这些接口都是返回的1，所以_LOADED[name] = 1 表示已经加载过
 */
 static const luaL_Reg loadedlibs[] = {
   {LUA_GNAME, luaopen_base},
@@ -53,13 +54,15 @@ static const luaL_Reg loadedlibs[] = {
   {NULL, NULL}
 };
 
-
+/*
+** 创建state后执行的第一个函数，注册基础库
+*/
 LUALIB_API void luaL_openlibs (lua_State *L) {
   const luaL_Reg *lib;
   /* "require" functions from 'loadedlibs' and set results to global table */
   for (lib = loadedlibs; lib->func; lib++) {
-    luaL_requiref(L, lib->name, lib->func, 1);
-    lua_pop(L, 1);  /* remove lib */
+    luaL_requiref(L, lib->name, lib->func, 1);  /* 判断库是否已经加载，没有加载则调用func加载，返回后把func的返回值压在栈顶，以上几个返回值都是1，而不是一个table */
+    lua_pop(L, 1);  /* remove lib 弹出返回值，恢复栈 */
   }
 }
 
