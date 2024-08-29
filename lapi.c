@@ -575,7 +575,11 @@ LUA_API const char *lua_pushfstring (lua_State *L, const char *fmt, ...) {
   return ret;
 }
 
-
+/*
+** 创建带有n个upvalues值的C闭包函数，并压入栈顶
+** 调用之前：栈的top-n到top-1是n个upvalue
+** 调用之后：栈顶是新建的C闭包函数，n个upvalue已经弹出栈了
+*/
 LUA_API void lua_pushcclosure (lua_State *L, lua_CFunction fn, int n) {
   lua_lock(L);
   if (n == 0) {
@@ -586,16 +590,16 @@ LUA_API void lua_pushcclosure (lua_State *L, lua_CFunction fn, int n) {
     CClosure *cl;
     api_checknelems(L, n);
     api_check(L, n <= MAXUPVAL, "upvalue index too large");
-    cl = luaF_newCclosure(L, n);
-    cl->f = fn;
-    L->top.p -= n;
-    while (n--) {
-      setobj2n(L, &cl->upvalue[n], s2v(L->top.p + n));
+    cl = luaF_newCclosure(L, n);	/* new一个C闭包函数结构体，cl->nupvalues的数组长度为n */
+    cl->f = fn;	/* 绑定函数 */
+    L->top.p -= n;	/*top先减掉n个upvalues的值，也相当于设置完后会弹出栈里的n个upvalues*/
+    while (n--) {	/*这里特别说明下：执行逻辑是先判断再减1，例如：n初始值4，第一次，满足n>0，然后n=n-1，所以循环内看到的n值分别是3、2、1、0，那while退出后n为多少？n是-1，因为最后一次，当n为0，不满足条件不会执行内部代码，但是会执行n=n-1*/
+      setobj2n(L, &cl->upvalue[n], s2v(L->top.p + n));	/* 把栈里的upvalue设置到cl的数组里，这里没有保持upvalue的顺序，先压入的在数组n-1上，5.4.x版本做了优化 */
       /* does not need barrier because closure is white */
       lua_assert(iswhite(cl));
     }
-    setclCvalue(L, s2v(L->top.p), cl);
-    api_incr_top(L);
+    setclCvalue(L, s2v(L->top.p), cl);	/*把C闭包压入栈顶，前面top已经减去了n*/
+    api_incr_top(L);	/*top必然要加1*/
     luaC_checkGC(L);
   }
   lua_unlock(L);
