@@ -285,6 +285,11 @@ static int floatforloop (StkId ra) {
 ** Finish the table access 'val = t[key]'.
 ** if 'slot' is NULL, 't' is not a table; otherwise, 'slot' points to
 ** t[k] entry (which must be empty).
+** 顺着元表链条查找key的值，查找顺序是：
+** 1、t[key]?表自己有没有key，没有的话才会调用到luaV_finishget，
+** 2、t.metatable.__index元方法有没有定义，有就执行该方法，
+** 3、t.metatable.__index是一个表，从里面查找key，
+** 4、都没找到，把metatable设置为t，继续深度遍历查找，
 */
 void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
                       const TValue *slot) {
@@ -295,25 +300,25 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
       lua_assert(!ttistable(t));
       tm = luaT_gettmbyobj(L, t, TM_INDEX);
       if (l_unlikely(notm(tm)))
-        luaG_typeerror(L, t, "index");  /* no metamethod */
+        luaG_typeerror(L, t, "index");  /* no metamethod 既不是表又没有__index的元方法，那没法找了，直接报错*/
       /* else will try the metamethod */
     }
     else {  /* 't' is a table */
       lua_assert(isempty(slot));
       tm = fasttm(L, hvalue(t)->metatable, TM_INDEX);  /* table's metamethod */
       if (tm == NULL) {  /* no metamethod? */
-        setnilvalue(s2v(val));  /* result is nil */
+        setnilvalue(s2v(val));  /* result is nil 表的元表里没有__index元方法，返回nil*/
         return;
       }
       /* else will try the metamethod */
     }
-    if (ttisfunction(tm)) {  /* is metamethod a function? */
+    if (ttisfunction(tm)) {  /* is metamethod a function? 如果有__index元方法，那么执行*/
       luaT_callTMres(L, tm, t, key, val);  /* call it */
       return;
     }
-    t = tm;  /* else try to access 'tm[key]' */
+    t = tm;  /* else try to access 'tm[key]' __index也是一个表，那么尝试查找tm[key] */
     if (luaV_fastget(L, t, key, slot, luaH_get)) {  /* fast track? */
-      setobj2s(L, val, slot);  /* done */
+      setobj2s(L, val, slot);  /* done 找到了key，把存放在slot里的值设置到栈上的val中 */
       return;
     }
     /* else repeat (tail call 'luaV_finishget') */

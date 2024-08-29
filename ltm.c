@@ -34,7 +34,9 @@ LUAI_DDEF const char *const luaT_typenames_[LUA_TOTALTYPES] = {
   "upvalue", "proto" /* these last cases are used for tests only */
 };
 
-
+/*
+** 初始化全局表里的元方法字符名字，并标记不被gc回收
+*/
 void luaT_init (lua_State *L) {
   static const char *const luaT_eventname[] = {  /* ORDER TM */
     "__index", "__newindex",
@@ -56,6 +58,7 @@ void luaT_init (lua_State *L) {
 /*
 ** function to be used with macro "fasttm": optimized for absence of
 ** tag methods
+** 快速获取元方法，只能获取<= TM_EQ的
 */
 const TValue *luaT_gettm (Table *events, TMS event, TString *ename) {
   const TValue *tm = luaH_getshortstr(events, ename);
@@ -67,18 +70,21 @@ const TValue *luaT_gettm (Table *events, TMS event, TString *ename) {
   else return tm;
 }
 
-
+/*
+** 根据原方法枚举event返回元方法
+** 返回找到的函数或者nil
+*/
 const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o, TMS event) {
   Table *mt;
   switch (ttype(o)) {
-    case LUA_TTABLE:
+    case LUA_TTABLE:  /* table和userdata有自己的元表 */
       mt = hvalue(o)->metatable;
       break;
     case LUA_TUSERDATA:
       mt = uvalue(o)->metatable;
       break;
     default:
-      mt = G(L)->mt[ttype(o)];
+      mt = G(L)->mt[ttype(o)];  /* 其他基本类型从全局表里返回公用的元表 */
   }
   return (mt ? luaH_getshortstr(mt, G(L)->tmname[event]) : &G(L)->nilvalue);
 }
@@ -115,22 +121,24 @@ void luaT_callTM (lua_State *L, const TValue *f, const TValue *p1,
     luaD_callnoyield(L, func, 0);
 }
 
-
+/*
+** 调用执行元方法,p1是table，p2是key，res是存放value的栈位置
+*/
 void luaT_callTMres (lua_State *L, const TValue *f, const TValue *p1,
                      const TValue *p2, StkId res) {
-  ptrdiff_t result = savestack(L, res);
-  StkId func = L->top.p;
-  setobj2s(L, func, f);  /* push function (assume EXTRA_STACK) */
-  setobj2s(L, func + 1, p1);  /* 1st argument */
-  setobj2s(L, func + 2, p2);  /* 2nd argument */
-  L->top.p += 3;
+  ptrdiff_t result = savestack(L, res); /* 保存存放value的栈地址相对于stack base的差值，此时栈里:|stack.base|x|x|x|res|top| */
+  StkId func = L->top.p;  /* 把当前top作为新func的地址 */
+  setobj2s(L, func, f);  /* push function (assume EXTRA_STACK) 压入函数 */
+  setobj2s(L, func + 1, p1);  /* 1st argument 压入table */
+  setobj2s(L, func + 2, p2);  /* 2nd argument 压入key */
+  L->top.p += 3;  /* top要指向最新的栈顶 */
   /* metamethod may yield only when called from Lua code */
   if (isLuacode(L->ci))
     luaD_call(L, func, 1);
   else
-    luaD_callnoyield(L, func, 1);
-  res = restorestack(L, result);
-  setobjs2s(L, res, --L->top.p);  /* move result to its place */
+    luaD_callnoyield(L, func, 1); /* 这2个有啥区别，都调用的ccall，只是inc不一样，看注释 */
+  res = restorestack(L, result);  /* 找回原来value的栈地址，此时栈里:|stack.base|x|x|x|res|value|top| */
+  setobjs2s(L, res, --L->top.p);  /* move result to its place 把value赋值给res，然后top-=1，弹出value */
 }
 
 

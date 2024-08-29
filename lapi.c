@@ -237,6 +237,10 @@ l_sinline void reverse (lua_State *L, StkId from, StkId to) {
 /*
 ** Let x = AB, where A is a prefix of length 'n'. Then,
 ** rotate x n == BA. But BA == (A^r . B^r)^r.
+** 这个得好好讲下，比较巧妙，理解的时候最好自己画下栈的情况，另一种好理解的方式
+** n<0的话：相当于把stack[idx]到stack[top-1]的元素，进行循环左移动n次；
+** n>0的话：相当于把stack[idx]到stack[top-1]的元素，进行循环右移动n次；
+** 例如：栈是pabcde,rotate(1,2)，相当于从a开始，循环右移2位：abcde->deabc
 */
 LUA_API void lua_rotate (lua_State *L, int idx, int n) {
   StkId p, t, m;
@@ -395,7 +399,9 @@ LUA_API lua_Integer lua_tointegerx (lua_State *L, int idx, int *pisnum) {
   return res;
 }
 
-
+/*
+** 判断栈顶值类型既不是false也不是nil的话就返回true
+*/
 LUA_API int lua_toboolean (lua_State *L, int idx) {
   const TValue *o = index2value(L, idx);
   return !l_isfalse(o);
@@ -637,23 +643,23 @@ LUA_API int lua_pushthread (lua_State *L) {
 
 /*
 ** get functions (Lua -> stack)
+** 获取t[k]的值并压入栈顶
+** 函数返回：值的类型
 */
-
-
 l_sinline int auxgetstr (lua_State *L, const TValue *t, const char *k) {
-  const TValue *slot;
-  TString *str = luaS_new(L, k);
+  const TValue *slot; /* slot作为查找到的value */
+  TString *str = luaS_new(L, k);  /* 从缓存中查找k或者新建一个TString */
   if (luaV_fastget(L, t, str, slot, luaH_getstr)) {
-    setobj2s(L, L->top.p, slot);
+    setobj2s(L, L->top.p, slot);  /* slot找到了并且不为nil，压入栈顶 */
     api_incr_top(L);
   }
-  else {
-    setsvalue2s(L, L->top.p, str);
+  else { /* 没找到，slot可能为NULL或者指向nil值 */
+    setsvalue2s(L, L->top.p, str); /* 先把key压入栈顶，把栈顶作为存放value的值了，到这里slot就不是作为值来存储了，传递下去作为临时变量，避免再重新创建slot */
     api_incr_top(L);
-    luaV_finishget(L, t, s2v(L->top.p - 1), L->top.p - 1, slot);
+    luaV_finishget(L, t, s2v(L->top.p - 1), L->top.p - 1, slot); /* 技巧：把key压入栈，即作为key又作为存放返回的value，返回后value在top-1的位置 */
   }
   lua_unlock(L);
-  return ttype(s2v(L->top.p - 1));
+  return ttype(s2v(L->top.p - 1)); /* 返回值的类型 */
 }
 
 
@@ -689,7 +695,9 @@ LUA_API int lua_gettable (lua_State *L, int idx) {
   return ttype(s2v(L->top.p - 1));
 }
 
-
+/*
+** 获取stack[idx][k]的值并压入栈顶
+*/
 LUA_API int lua_getfield (lua_State *L, int idx, const char *k) {
   lua_lock(L);
   return auxgetstr(L, index2value(L, idx), k);
@@ -829,6 +837,7 @@ LUA_API int lua_getiuservalue (lua_State *L, int idx, int n) {
 
 /*
 ** t[k] = value at the top of the stack (where 'k' is a string)
+** 把栈顶的值设置到t表中t[k] = stack[top-1],然后弹出栈顶值
 */
 static void auxsetstr (lua_State *L, const TValue *t, const char *k) {
   const TValue *slot;
@@ -847,7 +856,9 @@ static void auxsetstr (lua_State *L, const TValue *t, const char *k) {
   lua_unlock(L);  /* lock done by caller */
 }
 
-
+/*
+** 把栈顶的值设置到G表中G[name] = stack[top-1],然后弹出栈顶值
+*/
 LUA_API void lua_setglobal (lua_State *L, const char *name) {
   const TValue *G;
   lua_lock(L);  /* unlock done in 'auxsetstr' */

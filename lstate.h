@@ -295,8 +295,8 @@ typedef struct global_State {
   lua_CFunction panic;  /* to be called in unprotected errors */
   struct lua_State *mainthread;
   TString *memerrmsg;  /* message for memory-allocation errors */
-  TString *tmname[TM_N];  /* array with tag-method names */
-  struct Table *mt[LUA_NUMTYPES];  /* metatables for basic types */
+  TString *tmname[TM_N];  /* array with tag-method names 元方法名字字符数组*/
+  struct Table *mt[LUA_NUMTYPES];  /* metatables for basic types  每个基本类型一个metatable，但table、userdata等则是每个实例一个metatable，所以不会存在这里*/
   TString *strcache[STRCACHE_N][STRCACHE_M];  /* cache for strings in API */
   lua_WarnFunction warnf;  /* warning function */
   void *ud_warn;         /* auxiliary data to 'warnf' */

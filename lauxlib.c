@@ -946,7 +946,7 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
   luaL_checkstack(L, nup, "too many upvalues");
   for (; l->name != NULL; l++) {  /* fill the table with given functions 创建每个都拥有nup个upvalue的C闭包函数 */
     if (l->func == NULL)  /* placeholder? */
-      lua_pushboolean(L, 0);
+      lua_pushboolean(L, 0);  /* 占位的线设置为false值 */
     else {
       int i;
       for (i = 0; i < nup; i++)  /* copy upvalues to the top */
@@ -962,16 +962,18 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 /*
 ** ensure that stack[idx][fname] has a table and push that table
 ** into the stack
+** 获取fname表并压入栈顶，如果没有就新建一个，该表存在stack[idx]这个表中，或者在注册表里reg
+** 返回后：t在栈顶
 */
 LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
   if (lua_getfield(L, idx, fname) == LUA_TTABLE)
     return 1;  /* table already there */
-  else {
-    lua_pop(L, 1);  /* remove previous result */
+  else { /* 没找到，是个luanil值，新建个table */
+    lua_pop(L, 1);  /* remove previous result 先把lua_getfield返回的值弹出 */
     idx = lua_absindex(L, idx);
-    lua_newtable(L);
-    lua_pushvalue(L, -1);  /* copy to be left at top */
-    lua_setfield(L, idx, fname);  /* assign new table to field */
+    lua_newtable(L); /* new一个表并放入栈顶 */
+    lua_pushvalue(L, -1);  /* copy to be left at top 再复制一份表*/
+    lua_setfield(L, idx, fname);  /* assign new table to field 设置新表到stack[idx]，即reg[fname] = t,并弹出复制的t,创建的t就在栈顶 */
     return 0;  /* false, because did not find table there */
   }
 }
@@ -982,24 +984,26 @@ LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
 ** to open a module, registers the result in 'package.loaded' table and,
 ** if 'glb' is true, also registers the result in the global table.
 ** Leaves resulting module on the top.
+** 新创建的表在栈顶,t=LOADED[modname]
 */
 LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
                                lua_CFunction openf, int glb) {
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
   lua_getfield(L, -1, modname);  /* LOADED[modname] */
   if (!lua_toboolean(L, -1)) {  /* package not already loaded? */
-    lua_pop(L, 1);  /* remove field */
-    lua_pushcfunction(L, openf);
-    lua_pushstring(L, modname);  /* argument to open function */
-    lua_call(L, 1, 1);  /* call 'openf' to open module */
-    lua_pushvalue(L, -1);  /* make copy of module (call result) */
-    lua_setfield(L, -3, modname);  /* LOADED[modname] = module */
+    lua_pop(L, 1);  /* remove field 先弹出field的结果 */
+    lua_pushcfunction(L, openf);  /* 压入初始化函数 */
+    lua_pushstring(L, modname);  /* argument to open function 压入name参数*/
+    lua_call(L, 1, 1);  /* call 'openf' to open module 调用openf，1个参数1个返回值，table在栈顶*/
+    lua_pushvalue(L, -1);  /* make copy of module (call result) 复制一份来设置到LOADED表中，栈里：|LOADED|t|t1|top|*/
+    lua_setfield(L, -3, modname);  /* LOADED[modname] = module 把库的表t设置到LOADED中，并弹出t1，|LOADED|t|top| */
   }
-  lua_remove(L, -2);  /* remove LOADED table */
-  if (glb) {
+  lua_remove(L, -2);  /* remove LOADED table 删除stack[top-2]的值，怎么做的？使用rotate把要删除的元素移到top，然后弹出 */
+  if (glb) {  /* 如果glb不为0，则把t也存在_G表中 */
     lua_pushvalue(L, -1);  /* copy of module */
     lua_setglobal(L, modname);  /* _G[modname] = module */
   }
+  /* 没有返回值，栈顶是新创建的table */
 }
 
 

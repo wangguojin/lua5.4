@@ -533,17 +533,17 @@ static const luaL_Reg base_funcs[] = {
   {NULL, NULL}
 };
 
-
+/* G表在栈顶 */
 LUAMOD_API int luaopen_base (lua_State *L) {
   /* open lib into global table */
-  lua_pushglobaltable(L);
-  luaL_setfuncs(L, base_funcs, 0);
+  lua_pushglobaltable(L); /* 取G表压入栈顶 */
+  luaL_setfuncs(L, base_funcs, 0); /* 注册G表的所有接口 */
   /* set global _G */
-  lua_pushvalue(L, -1);
-  lua_setfield(L, -2, LUA_GNAME);
+  lua_pushvalue(L, -1); /* 复制一份G表到栈顶 */
+  lua_setfield(L, -2, LUA_GNAME); /* 创建_G到G的引用，也就是G["_G"]=G,弹出复制的G */
   /* set global _VERSION */
   lua_pushliteral(L, LUA_VERSION);
-  lua_setfield(L, -2, "_VERSION");
+  lua_setfield(L, -2, "_VERSION");  /* 设置G["_VERSION"]，并弹出version */
   return 1;
 }
 

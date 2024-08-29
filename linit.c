@@ -61,7 +61,7 @@ LUALIB_API void luaL_openlibs (lua_State *L) {
   const luaL_Reg *lib;
   /* "require" functions from 'loadedlibs' and set results to global table */
   for (lib = loadedlibs; lib->func; lib++) {
-    luaL_requiref(L, lib->name, lib->func, 1);  /* 判断库是否已经加载，没有加载则调用func加载，返回后把func的返回值压在栈顶，以上几个返回值都是1，而不是一个table */
+    luaL_requiref(L, lib->name, lib->func, 1);  /* 判断库是否已经加载，没有加载则调用func加载，返回后把func的返回值压在栈顶，以上几个返回值都是1个参数，table在栈顶 */
     lua_pop(L, 1);  /* remove lib 弹出返回值，恢复栈 */
   }
 }

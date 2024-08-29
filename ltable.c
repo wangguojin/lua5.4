@@ -295,6 +295,9 @@ static unsigned int setlimittosize (Table *t) {
 ** "Generic" get version. (Not that generic: not valid for integers,
 ** which may be in array part, nor for floats with integral values.)
 ** See explanation about 'deadok' in function 'equalkey'.
+** 从表t里查找是否有key，有的话返回value，
+** 怎么查？先计算key在数组中的主位置，判断是否相等；如果不等，就遍历该Node的链表查找，
+** 原理用的是开放寻址法，都存在一块数组里，
 */
 static const TValue *getgeneric (Table *t, const TValue *key, int deadok) {
   Node *n = mainpositionTV(t, key);
@@ -785,7 +788,9 @@ const TValue *luaH_getshortstr (Table *t, TString *key) {
   }
 }
 
-
+/*
+** 取值t[k]，内部会区分长短字符串
+*/
 const TValue *luaH_getstr (Table *t, TString *key) {
   if (key->tt == LUA_VSHRSTR)
     return luaH_getshortstr(t, key);
@@ -799,6 +804,7 @@ const TValue *luaH_getstr (Table *t, TString *key) {
 
 /*
 ** main search function
+** 根据key的类型，分别从表里取值t[key]
 */
 const TValue *luaH_get (Table *t, const TValue *key) {
   switch (ttypetag(key)) {

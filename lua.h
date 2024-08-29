@@ -392,6 +392,7 @@ LUA_API void (lua_closeslot) (lua_State *L, int idx);
 
 #define lua_pushliteral(L, s)	lua_pushstring(L, "" s)
 
+/* 获取G表=G(L)->reg->array[LUA_RIDX_GLOBALS-1]，放入栈顶 */
 #define lua_pushglobaltable(L)  \
 	((void)lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS))
 
@@ -400,6 +401,7 @@ LUA_API void (lua_closeslot) (lua_State *L, int idx);
 
 #define lua_insert(L,idx)	lua_rotate(L, (idx), 1)
 
+/* 先rotate(idx,-1)，把stack[idx]的值循环左移1位到top-1处，然后pop弹出 */
 #define lua_remove(L,idx)	(lua_rotate(L, (idx), -1), lua_pop(L, 1))
 
 #define lua_replace(L,idx)	(lua_copy(L, -1, (idx)), lua_pop(L, 1))

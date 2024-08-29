@@ -650,6 +650,9 @@ void luaD_call (lua_State *L, StkId func, int nResults) {
 
 /*
 ** Similar to 'luaD_call', but does not allow yields during the call.
+** 不允许在调用链中有yield调用，通过设置nCcalls为0x10001来检测触发报错，
+** 假如后续调用到了yield，在执行lua_yieldk时会有!yieldable(L)检测，(((L)->nCcalls & 0xffff0000) == 0)，那么!((0x10001 & 0xffff0000) == 0)是true，就会打印错误信息
+** 原因是：co->c func->lua func->co.yield时，yield是通过使用longjmp来实现协程的挂起，longjmp会跳到resume去执行，使得后面的C代码被中断。
 */
 void luaD_callnoyield (lua_State *L, StkId func, int nResults) {
   ccall(L, func, nResults, nyci);

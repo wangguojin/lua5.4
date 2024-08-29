@@ -81,6 +81,8 @@ typedef enum {
 ** Otherwise, return 0 (meaning it will have to check metamethod)
 ** with 'slot' pointing to an empty 't[k]' (if 't' is a table) or NULL
 ** (otherwise). 'f' is the raw get function to use.
+** 如果t不是表，那么slot=NULL，并且返回0，
+** 如果是表，调用f获取slot=t[k]，并且返回slot是不是nil的：0表示要进一步调用元方法查找
 */
 #define luaV_fastget(L,t,k,slot,f) \
   (!ttistable(t)  \
