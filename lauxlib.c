@@ -938,21 +938,24 @@ LUALIB_API const char *luaL_tolstring (lua_State *L, int idx, size_t *len) {
 ** set functions from list 'l' into table at top - 'nup'; each
 ** function gets the 'nup' elements at the top as upvalues.
 ** Returns with only the table at the stack.
+** 把l数组里的函数设置到表里，并且有nup个upvalues
+** 调用之前：会依次压入table、up1...upn到栈里
+** 调用之后：nup个upvalues出栈，table留在栈顶
 */
 LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
   luaL_checkstack(L, nup, "too many upvalues");
-  for (; l->name != NULL; l++) {  /* fill the table with given functions */
+  for (; l->name != NULL; l++) {  /* fill the table with given functions 创建每个都拥有nup个upvalue的C闭包函数 */
     if (l->func == NULL)  /* placeholder? */
       lua_pushboolean(L, 0);
     else {
       int i;
       for (i = 0; i < nup; i++)  /* copy upvalues to the top */
-        lua_pushvalue(L, -nup);
-      lua_pushcclosure(L, l->func, nup);  /* closure with those upvalues */
+        lua_pushvalue(L, -nup);  /*如何复制的：循环nup次，每次都把top-nup的值拷贝到top里，并且top++；例如：原来栈里是table|a|b|c|d|top|,复制完后是：table|a|b|c|d|a|b|c|d|top|*/
+      lua_pushcclosure(L, l->func, nup);  /* closure with those upvalues 返回后，栈顶是C闭包函数  */
     }
-    lua_setfield(L, -(nup + 2), l->name);
+    lua_setfield(L, -(nup + 2), l->name);  /* 把C闭包设置到表里，t[name] = cl,表在top-(n+2)，cl在top-1，为什么在n+2处，因为最开始t在top-(n+1)处，后续创建的C闭包压入了栈顶，所以是n+2；同时要把C闭包也弹出，恢复好栈 */
   }
-  lua_pop(L, nup);  /* remove upvalues */
+  lua_pop(L, nup);  /* remove upvalues 弹出nup个upvalues，栈顶只保留表t */
 }
 
 
