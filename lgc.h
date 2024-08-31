@@ -102,7 +102,7 @@
 #define luaC_white(g)	cast_byte((g)->currentwhite & WHITEBITS)
 
 
-/* object age in generational mode */
+/* object age in generational mode 分代垃圾回收 */
 #define G_NEW		0	/* created in current cycle */
 #define G_SURVIVAL	1	/* created in previous cycle */
 #define G_OLD0		2	/* marked old by frw. barrier in this cycle */
@@ -171,17 +171,22 @@
 /* more often than not, 'pre'/'pos' are empty */
 #define luaC_checkGC(L)		luaC_condGC(L,(void)0,(void)0)
 
-
+/* 前向和后向的区别：前向适用于不会频繁改变引用关系的数据类型，如Lua的proto结构；后向适用于会出现频繁改变引用关系情况的数据类型，如Lua的表结构
+** 也就是说，在两次调用GC步骤的过程中，表中的同一个key可能被赋值多次value。如果把这些value对象均标记为灰色，并放入gray链表，
+** 那么将会造成许多无谓的标记和传播操作，因为这些value很可能不再被引用，需要被回收。因此，只要把已经标记为黑色的表重新设置为灰色，性能更好。
+*/
+/* 向前屏障，o必须是可回收的白色对象，p必须是黑色；针对sweap清理阶段之前新创建的白色对象被黑色对象所引用*/
 #define luaC_objbarrier(L,p,o) (  \
 	(isblack(p) && iswhite(o)) ? \
 	luaC_barrier_(L,obj2gco(p),obj2gco(o)) : cast_void(0))
 
+/* 向前屏障，v必须是可回收的白色对象，p必须是黑色；针对sweap清理阶段之前新创建的白色对象被黑色对象所引用*/
 #define luaC_barrier(L,p,v) (  \
 	iscollectable(v) ? luaC_objbarrier(L,p,gcvalue(v)) : cast_void(0))
-
+/* 向后屏障，o必须是可回收的白色对象，p必须是黑色；p会被标记为灰色，并放入graygain链表中 */
 #define luaC_objbarrierback(L,p,o) (  \
 	(isblack(p) && iswhite(o)) ? luaC_barrierback_(L,p) : cast_void(0))
-
+/* 向后屏障，v必须是可回收的白色对象，p必须是黑色；p会被标记为灰色，并放入graygain链表中 */
 #define luaC_barrierback(L,p,v) (  \
 	iscollectable(v) ? luaC_objbarrierback(L, p, gcvalue(v)) : cast_void(0))
 
@@ -191,7 +196,7 @@ LUAI_FUNC void luaC_step (lua_State *L);
 LUAI_FUNC void luaC_runtilstate (lua_State *L, int statesmask);
 LUAI_FUNC void luaC_fullgc (lua_State *L, int isemergency);
 LUAI_FUNC GCObject *luaC_newobj (lua_State *L, int tt, size_t sz);
-LUAI_FUNC GCObject *luaC_newobjdt (lua_State *L, int tt, size_t sz,
+LUAI_FUNC GCObject * (lua_State *L, int tt, size_t sz,
                                                  size_t offset);
 LUAI_FUNC void luaC_barrier_ (lua_State *L, GCObject *o, GCObject *v);
 LUAI_FUNC void luaC_barrierback_ (lua_State *L, GCObject *o);

@@ -262,7 +262,7 @@ typedef struct global_State {
   TValue l_registry;
   TValue nilvalue;  /* a nil value */
   unsigned int seed;  /* randomized seed for hashes */
-  lu_byte currentwhite;
+  lu_byte currentwhite; /* atomic阶段执行最后会调用otherwhite变换白色 */
   lu_byte gcstate;  /* state of garbage collector */
   lu_byte gckind;  /* kind of GC running */
   lu_byte gcstopem;  /* stops emergency collections */
@@ -282,7 +282,7 @@ typedef struct global_State {
   GCObject *ephemeron;  /* list of ephemeron tables (weak keys) */
   GCObject *allweak;  /* list of all-weak tables */
   GCObject *tobefnz;  /* list of userdata to be GC */
-  GCObject *fixedgc;  /* list of objects not to be collected */
+  GCObject *fixedgc;  /* list of objects not to be collected 存放永远都不会被gc回收的对象*/
   /* fields for generational collector */
   GCObject *survival;  /* start of objects that survived one GC cycle */
   GCObject *old1;  /* start of old1 objects */

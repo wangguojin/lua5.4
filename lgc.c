@@ -121,7 +121,7 @@ static void entersweep (lua_State *L);
 */
 #define gnodelast(h)	gnode(h, cast_sizet(sizenode(h)))
 
-
+/* 根据o的类型，返回gclist字段 */
 static GCObject **getgclist (GCObject *o) {
   switch (o->tt) {
     case LUA_VTABLE: return &gco2t(o)->gclist;
@@ -142,6 +142,7 @@ static GCObject **getgclist (GCObject *o) {
 /*
 ** Link a collectable object 'o' with a known type into the list 'p'.
 ** (Must be a macro to access the 'gclist' field in different types.)
+** 把可回收对象O链到P的头部，然后标记O为灰色
 */
 #define linkgclist(o,p)	linkgclist_(obj2gco(o), &(o)->gclist, &(p))
 
@@ -155,6 +156,7 @@ static void linkgclist_ (GCObject *o, GCObject **pnext, GCObject **list) {
 
 /*
 ** Link a generic collectable object 'o' into the list 'p'.
+** 把可回收对象O链到P的头部，然后标记O为灰色
 */
 #define linkobjgclist(o,p) linkgclist_(obj2gco(o), getgclist(o), &(p))
 
@@ -167,6 +169,10 @@ static void linkgclist_ (GCObject *o, GCObject **pnext, GCObject **list) {
 ** a table traversal.  Other places never manipulate dead keys, because
 ** its associated empty value is enough to signal that the entry is
 ** logically empty.
+** 清理表中空value的键。如果一个value是空的，则将其标记为已死亡。这允许回收该键的空间，但仍然保留其在表中的条目
+** 移除它可能会打断一个链表，并且可能会影响对表的遍历
+** 其他地方从不操作这些已标记为死亡的键，因为与之关联的空值已经足以表明该条目在逻辑上是空的
+** Node必须是可回收对象
 */
 static void clearkey (Node *n) {
   lua_assert(isempty(gval(n)));
@@ -181,6 +187,13 @@ static void clearkey (Node *n) {
 ** tables. Strings behave as 'values', so are never removed too. for
 ** other objects: if really collected, cannot keep them; for objects
 ** being finalized, keep them in keys, but not in values
+** 判断一个key或者value是否能从弱表里清理掉？
+** 非可回收对象是绝对不会从弱表里移除的，字符串作为值来处理，也是绝对不会被移除；
+** 对于其他对象：如果确实已经回收，那么久不能保留他们；
+** 对于那些正在执行析构的对象，以键的方式保留，而不是值的方式；
+** o是NULL，则为非可回收对象，返回0；
+** 字符串直接设为黑色，返回0；
+** 通用返回是否是白色；
 */
 static int iscleared (global_State *g, const GCObject *o) {
   if (o == NULL) return 0;  /* non-collectable value */
@@ -204,18 +217,22 @@ static int iscleared (global_State *g, const GCObject *o) {
 ** it) to avoid other barrier calls for this same object. (That cannot
 ** be done is generational mode, as its sweep does not distinguish
 ** whites from deads.)
+** GC算法的主要规则：黑色对象不能直接引用白色对象；为啥？因为对象是黑色表示已经被标记过，不会再重新遍历了，那么子对象就没法重新被标记，就会出现新对象被引用但是被释放了；
+** 向前屏障，v必须是可回收的白色对象，o必须是黑色；针对sweep清理阶段之前新创建的白色对象被黑色对象所引用；
+** gc阶段在<=atomic:直接标记v，v根据类型可以被标为黑色、灰色、或者放入gray链表中等待遍历标记；
+** gc阶段在sweep的清理阶段：只针对增量GC模式时，将o标记为当前白色(其实是otherwhite，在atomic最后已经将otherwhite切换为currwhite了，G->currentwhite)
 */
 void luaC_barrier_ (lua_State *L, GCObject *o, GCObject *v) {
   global_State *g = G(L);
   lua_assert(isblack(o) && iswhite(v) && !isdead(g, v) && !isdead(g, o));
   if (keepinvariant(g)) {  /* must keep invariant? */
-    reallymarkobject(g, v);  /* restore invariant */
-    if (isold(o)) {
+    reallymarkobject(g, v);  /* restore invariant 标记颜色，不希望被清理 */
+    if (isold(o)) { /* 分代gc的处理，忽略 */
       lua_assert(!isold(v));  /* white object could not be old */
       setage(v, G_OLD0);  /* restore generational invariant */
     }
   }
-  else {  /* sweep phase */
+  else {  /* sweep phase 如果是在清理阶段，直接设置o为新白色，因为本身清理阶段也是将黑色变为新白色，不会去清理新白色的对象 */
     lua_assert(issweepphase(g));
     if (g->gckind == KGC_INC)  /* incremental mode? */
       makewhite(g, o);  /* mark 'o' as white to avoid other barriers */
@@ -226,6 +243,7 @@ void luaC_barrier_ (lua_State *L, GCObject *o, GCObject *v) {
 /*
 ** barrier that moves collector backward, that is, mark the black object
 ** pointing to a white object as gray again.
+** 向后屏障，o必须是黑色，将o设置为灰色并放入grayagain链表中，等待后续遍历
 */
 void luaC_barrierback_ (lua_State *L, GCObject *o) {
   global_State *g = G(L);
@@ -239,7 +257,9 @@ void luaC_barrierback_ (lua_State *L, GCObject *o) {
     setage(o, G_TOUCHED1);  /* touched in current cycle */
 }
 
-
+/*
+** 标记o永远不被gc回收：o设为灰色，并从allgc中移除，放到fixedgc链表中
+*/
 void luaC_fix (lua_State *L, GCObject *o) {
   global_State *g = G(L);
   lua_assert(g->allgc == o);  /* object must be 1st in 'allgc' list! */
@@ -254,6 +274,10 @@ void luaC_fix (lua_State *L, GCObject *o) {
 /*
 ** create a new collectable object (with given type, size, and offset)
 ** and link it to 'allgc' list.
+** 新建可回收对象，并标记为白色，链接到allgc中
+** sz一般是结构体大小，例如：sz = sizeof(LX)
+** offset一般使用offsetof宏来取结构体字段的偏移大小，例如：offsetof(LX,l)，
+** offset的定义：#define offsetof(type, member) ((size_t) &((type *)0)->member)
 */
 GCObject *luaC_newobjdt (lua_State *L, int tt, size_t sz, size_t offset) {
   global_State *g = G(L);
@@ -266,7 +290,7 @@ GCObject *luaC_newobjdt (lua_State *L, int tt, size_t sz, size_t offset) {
   return o;
 }
 
-
+/* 新建可回收对象，并标记为白色，链接到allgc中 */
 GCObject *luaC_newobj (lua_State *L, int tt, size_t sz) {
   return luaC_newobjdt(L, tt, sz, 0);
 }
@@ -293,12 +317,17 @@ GCObject *luaC_newobj (lua_State *L, int tt, size_t sz) {
 ** upvalues can call this function recursively, but this recursion goes
 ** for at most two levels: An upvalue cannot refer to another upvalue
 ** (only closures can), and a userdata's metatable must be a table.
+** 标记对象颜色
+** 黑色：没有用户值的userdata、字符串、关闭的upvalue；
+** 开放的upvalue已经间接地被各自的thread引用在了twups里，所以不加入gray列表，但是也要标记为灰色，避免被屏障，因为他们会被重新访问remarkupvals；
+** 其他对象置为灰色并加入gray链表并且在随后的访问的标记为黑色；
+** userdata和upvalue可以递归地调用本函数，但最多递归2层：upvalue不会引用另一个upvalue(只有闭包可以),并且userdata的元表必须是table；
 */
 static void reallymarkobject (global_State *g, GCObject *o) {
   switch (o->tt) {
     case LUA_VSHRSTR:
     case LUA_VLNGSTR: {
-      set2black(o);  /* nothing to visit */
+      set2black(o);  /* nothing to visit 字符串一律为黑色*/
       break;
     }
     case LUA_VUPVAL: {
@@ -321,7 +350,7 @@ static void reallymarkobject (global_State *g, GCObject *o) {
     }  /* FALLTHROUGH */
     case LUA_VLCL: case LUA_VCCL: case LUA_VTABLE:
     case LUA_VTHREAD: case LUA_VPROTO: {
-      linkobjgclist(o, g->gray);  /* to be visited later */
+      linkobjgclist(o, g->gray);  /* to be visited later 只要加入gray的都会标记为灰色*/
       break;
     }
     default: lua_assert(0); break;
@@ -331,6 +360,7 @@ static void reallymarkobject (global_State *g, GCObject *o) {
 
 /*
 ** mark metamethods for basic types
+** 标记所有类型的元方法,设为灰色并直接放入gray中
 */
 static void markmt (global_State *g) {
   int i;
@@ -341,6 +371,7 @@ static void markmt (global_State *g) {
 
 /*
 ** mark all objects in list of being-finalized
+** 标记所有正在执行析构的对象
 */
 static lu_mem markbeingfnz (global_State *g) {
   GCObject *o;
@@ -363,6 +394,7 @@ static lu_mem markbeingfnz (global_State *g) {
 ** the list, as it was already visited. Removes also threads with no
 ** upvalues, as they have nothing to be checked. (If the thread gets an
 ** upvalue later, it will be linked in the list again.)
+** 重新标记协程的开放upavlues
 */
 static int remarkupvals (global_State *g) {
   lua_State *thread;
