@@ -89,7 +89,24 @@ typedef struct CallInfo CallInfo;
 ** of gray lists. (They don't even have a 'gclist' field.)
 */
 
-
+/*
+** lua5.2 针对openupvalue的说明：
+** Open upvalues are not subject to independent garbage collection. They
+** are collected together with their respective threads. Lua keeps a
+** double-linked list with all open upvalues (g->uvhead) so that it can
+** mark objects referred by them. (They are always gray, so they must
+** be remarked in the atomic step. Usually their contents would be marked
+** when traversing the respective threads, but the thread may already be
+** dead, while the upvalue is still accessible through closures.)
+** 开放的上值（upvalues）不会进行独立的垃圾收集。它们会与其各自的协程一起被回收。
+** Lua维护了一个包含所有开放上值的双向链表（g->uvhead），以便能够标记这些上值所引用的对象。（
+** 这些上值总是被标记为灰色，因此必须在原子步骤中重新标记。通常，在遍历各自线程时会标记它们的内容，
+** 但线程可能已经死亡，而上值仍然可以通过闭包被访问。）
+** 什么情况下会出现：thread状态是dead，但是还有闭包可以访问里面的值？
+** 1、如果thread里有个闭包f并包含upvalue，被全局变量引用；
+** 2、闭包f在协程之间传递，比如：协程A的闭包传递给协程B；
+** 所以，即使thread死亡了，这些闭包还是要能访问，不然会出错
+*/
 
 /*
 ** About 'nCcalls':  This count has two parts: the lower 16 bits counts
@@ -256,7 +273,7 @@ typedef struct global_State {
   void *ud;         /* auxiliary data to 'frealloc' */
   l_mem totalbytes;  /* number of bytes currently allocated - GCdebt */
   l_mem GCdebt;  /* bytes allocated not yet compensated by the collector */
-  lu_mem GCestimate;  /* an estimate of the non-garbage memory in use */
+  lu_mem GCestimate;  /* an estimate of the non-garbage memory in use 仍在使用中的对象的总内存预估 */
   lu_mem lastatomic;  /* see function 'genstep' in file 'lgc.c' */
   stringtable strt;  /* hash table for strings */
   TValue l_registry;
@@ -265,7 +282,7 @@ typedef struct global_State {
   lu_byte currentwhite; /* atomic阶段执行最后会调用otherwhite变换白色 */
   lu_byte gcstate;  /* state of garbage collector */
   lu_byte gckind;  /* kind of GC running */
-  lu_byte gcstopem;  /* stops emergency collections */
+  lu_byte gcstopem;  /* stops emergency collections 标记是否在singlestep调用中，用于避免GC重入*/
   lu_byte genminormul;  /* control for minor generational collections */
   lu_byte genmajormul;  /* control for major generational collections */
   lu_byte gcstp;  /* control whether GC is running */
@@ -275,13 +292,13 @@ typedef struct global_State {
   lu_byte gcstepsize;  /* (log2 of) GC granularity */
   GCObject *allgc;  /* list of all collectable objects */
   GCObject **sweepgc;  /* current position of sweep in list */
-  GCObject *finobj;  /* list of collectable objects with finalizers */
+  GCObject *finobj;  /* list of collectable objects with finalizers 带有析构函数的可回收对象 */
   GCObject *gray;  /* list of gray objects */
   GCObject *grayagain;  /* list of objects to be traversed atomically */
-  GCObject *weak;  /* list of tables with weak values */
-  GCObject *ephemeron;  /* list of ephemeron tables (weak keys) */
-  GCObject *allweak;  /* list of all-weak tables */
-  GCObject *tobefnz;  /* list of userdata to be GC */
+  GCObject *weak;  /* list of tables with weak values 弱值表 */
+  GCObject *ephemeron;  /* list of ephemeron tables (weak keys) 弱键表 */
+  GCObject *allweak;  /* list of all-weak tables 弱键值表 */
+  GCObject *tobefnz;  /* list of userdata to be GC 等待被GC的userdata*/
   GCObject *fixedgc;  /* list of objects not to be collected 存放永远都不会被gc回收的对象*/
   /* fields for generational collector */
   GCObject *survival;  /* start of objects that survived one GC cycle */
@@ -291,7 +308,7 @@ typedef struct global_State {
   GCObject *finobjsur;  /* list of survival objects with finalizers */
   GCObject *finobjold1;  /* list of old1 objects with finalizers */
   GCObject *finobjrold;  /* list of really old objects with finalizers */
-  struct lua_State *twups;  /* list of threads with open upvalues */
+  struct lua_State *twups;  /* list of threads with open upvalues 存放有开放upvalue的luastate*/
   lua_CFunction panic;  /* to be called in unprotected errors */
   struct lua_State *mainthread;
   TString *memerrmsg;  /* message for memory-allocation errors */
@@ -310,13 +327,13 @@ struct lua_State {
   CommonHeader;
   lu_byte status;
   lu_byte allowhook;
-  unsigned short nci;  /* number of items in 'ci' list */
+  unsigned short nci;  /* number of items in 'ci' list 有多少个callinfo */
   StkIdRel top;  /* first free slot in the stack */
   global_State *l_G;
   CallInfo *ci;  /* call info for current function */
   StkIdRel stack_last;  /* end of stack (last element + 1) */
   StkIdRel stack;  /* stack base */
-  UpVal *openupval;  /* list of open upvalues in this stack */
+  UpVal *openupval;  /* list of open upvalues in this stack 指向栈上的开放upvalues */
   StkIdRel tbclist;  /* list of to-be-closed variables */
   GCObject *gclist;
   struct lua_State *twups;  /* list of threads with open upvalues */

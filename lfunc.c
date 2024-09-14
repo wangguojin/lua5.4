@@ -61,6 +61,15 @@ void luaF_initupvals (lua_State *L, LClosure *cl) {
 /*
 ** Create a new upvalue at the given level, and link it to the list of
 ** open upvalues of 'L' after entry 'prev'.
+** 新建一个开放的upvalue对象，传入得prev是最后一个uv的next地址；
+** 那5.4里面的openupvalue是如何组织的链表？
+** |a.next|------>|b.next|----->|c.next|
+** 
+** |previous|    |previous|    |previous|
+**    NULL        &a.next       &b.next
+** 如上图，这个双向链表和常规的还不太一样，这里的previous保存的是之前节点的&next，而不是我们常规的&a；
+** 也就是说：previous=&a.next,*previous=a.next,b.next=*previous=a.next就是把下个对象链接到b.next上；
+** 为什么这么设计？估计是只想管理添加和删除结点，单一职责，不希望访问到前面的结点，我们常规的方式b.previous=&a,那么就可能修改a里面的其他值，现在这种方式不能访问；
 **/
 static UpVal *newupval (lua_State *L, StkId level, UpVal **prev) {
   GCObject *o = luaC_newobj(L, LUA_VUPVAL, sizeof(UpVal));
@@ -178,17 +187,18 @@ void luaF_newtbcupval (lua_State *L, StkId level) {
   L->tbclist.p = level;
 }
 
-
+/* 将uv从对应链表里删除 */
 void luaF_unlinkupval (UpVal *uv) {
   lua_assert(upisopen(uv));
-  *uv->u.open.previous = uv->u.open.next;
+  *uv->u.open.previous = uv->u.open.next; /* 把上个节点的next值设置为uv的next值，指向下一个节点 */
   if (uv->u.open.next)
-    uv->u.open.next->u.open.previous = uv->u.open.previous;
+    uv->u.open.next->u.open.previous = uv->u.open.previous; /* 把下一个节点的previous设置为uv的previous，指向前面节点的next地址 */
 }
 
 
 /*
 ** Close all upvalues up to the given stack level.
+** 关闭对应函数调用等级下的所有upvalues
 */
 void luaF_closeupval (lua_State *L, StkId level) {
   UpVal *uv;
@@ -198,9 +208,9 @@ void luaF_closeupval (lua_State *L, StkId level) {
     lua_assert(uplevel(uv) < L->top.p);
     luaF_unlinkupval(uv);  /* remove upvalue from 'openupval' list */
     setobj(L, slot, uv->v.p);  /* move value to upvalue slot */
-    uv->v.p = slot;  /* now current value lives here */
-    if (!iswhite(uv)) {  /* neither white nor dead? */
-      nw2black(uv);  /* closed upvalues cannot be gray */
+    uv->v.p = slot;  /* now current value lives here 开放的upvalue要关闭，并保存到自己的value中 */
+    if (!iswhite(uv)) {  /* neither white nor dead? upvalue还被引用 */
+      nw2black(uv);  /* closed upvalues cannot be gray 标黑不能被释放；同时把保存的value值也标记颜色 */
       luaC_barrier(L, uv, slot);
     }
   }
@@ -263,7 +273,7 @@ Proto *luaF_newproto (lua_State *L) {
   return f;
 }
 
-
+/* 先释放数组，再释放f */
 void luaF_freeproto (lua_State *L, Proto *f) {
   luaM_freearray(L, f->code, f->sizecode);
   luaM_freearray(L, f->p, f->sizep);

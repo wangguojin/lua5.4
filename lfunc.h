@@ -18,7 +18,7 @@
                          cast_int(sizeof(TValue *)) * (n))
 
 
-/* test whether thread is in 'twups' list */
+/* test whether thread is in 'twups' list 如果指向自己就表示不在g->twups中 */
 #define isintwups(L)	(L->twups != L)
 
 

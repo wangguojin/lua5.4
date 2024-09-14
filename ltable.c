@@ -637,7 +637,7 @@ Table *luaH_new (lua_State *L) {
   return t;
 }
 
-
+/* 释放表t的内存 */
 void luaH_free (lua_State *L, Table *t) {
   freehash(L, t);
   luaM_freearray(L, t->array, luaH_realasize(t));

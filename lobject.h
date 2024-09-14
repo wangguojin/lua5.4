@@ -552,23 +552,23 @@ typedef struct Proto {
   lu_byte numparams;  /* number of fixed (named) parameters */
   lu_byte is_vararg;
   lu_byte maxstacksize;  /* number of registers needed by this function */
-  int sizeupvalues;  /* size of 'upvalues' */
-  int sizek;  /* size of 'k' */
+  int sizeupvalues;  /* size of 'upvalues' Upvaldesc数组的大小 */
+  int sizek;  /* size of 'k' 常量数组大小 */
   int sizecode;
   int sizelineinfo;
-  int sizep;  /* size of 'p' */
-  int sizelocvars;
+  int sizep;  /* size of 'p' 嵌套的函数大小 */
+  int sizelocvars;  /* 局部变量大小 */
   int sizeabslineinfo;  /* size of 'abslineinfo' */
   int linedefined;  /* debug information  */
   int lastlinedefined;  /* debug information  */
-  TValue *k;  /* constants used by the function */
+  TValue *k;  /* constants used by the function 函数使用的常量数组 */
   Instruction *code;  /* opcodes */
-  struct Proto **p;  /* functions defined inside the function */
-  Upvaldesc *upvalues;  /* upvalue information */
+  struct Proto **p;  /* functions defined inside the function 内部嵌套的函数数组*/
+  Upvaldesc *upvalues;  /* upvalue information 编译后的upvalue信息数组 */
   ls_byte *lineinfo;  /* information about source lines (debug information) */
   AbsLineInfo *abslineinfo;  /* idem */
-  LocVar *locvars;  /* information about local variables (debug information) */
-  TString  *source;  /* used for debug information */
+  LocVar *locvars;  /* information about local variables (debug information) 局部变量数组 */
+  TString  *source;  /* used for debug information 源码文件 */
   GCObject *gclist;
 } Proto;
 
@@ -627,7 +627,7 @@ typedef struct Proto {
 typedef struct UpVal {
   CommonHeader;
   union {
-    TValue *p;  /* points to stack or to its own value */
+    TValue *p;  /* points to stack or to its own value 指向外层函数的local变量，在栈上；或者指向自己的value,在closed的时候 */
     ptrdiff_t offset;  /* used while the stack is being reallocated */
   } v;
   union {
@@ -635,7 +635,7 @@ typedef struct UpVal {
       struct UpVal *next;  /* linked list */
       struct UpVal **previous;
     } open;
-    TValue value;  /* the value (when closed) */
+    TValue value;  /* the value (when closed) 关闭的时候保存的值 */
   } u;
 } UpVal;
 

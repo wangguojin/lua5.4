@@ -90,12 +90,13 @@
 */
 #define gcvalueN(o)     (iscollectable(o) ? gcvalue(o) : NULL)
 
-
+/* 标记对象o的val值为黑色，或者灰色并加入gray中，白色才标记 */
 #define markvalue(g,o) { checkliveness(g->mainthread,o); \
   if (valiswhite(o)) reallymarkobject(g,gcvalue(o)); }
 
+/* 标记对象n的key值为黑色，或者灰色并加入gray中 */
 #define markkey(g, n)	{ if keyiswhite(n) reallymarkobject(g,gckey(n)); }
-
+/* 标记对象t为黑色，或者灰色并加入gray中 */
 #define markobject(g,t)	{ if (iswhite(t)) reallymarkobject(g, obj2gco(t)); }
 
 /*
@@ -108,7 +109,7 @@ static void reallymarkobject (global_State *g, GCObject *o);
 static lu_mem atomic (lua_State *L);
 static void entersweep (lua_State *L);
 
-
+/* cloudwu的gc剖析参考：http://shanks.link/blog/2021/04/09/%E4%BA%91%E9%A3%8E%E7%9A%84blog-lua-gc%E7%9A%84%E6%BA%90%E7%A0%81%E8%A7%A3%E5%89%961/ */
 /*
 ** {======================================================
 ** Generic functions
@@ -189,8 +190,8 @@ static void clearkey (Node *n) {
 ** being finalized, keep them in keys, but not in values
 ** 判断一个key或者value是否能从弱表里清理掉？
 ** 非可回收对象是绝对不会从弱表里移除的，字符串作为值来处理，也是绝对不会被移除；
-** 对于其他对象：如果确实已经回收，那么久不能保留他们；
-** 对于那些正在执行析构的对象，以键的方式保留，而不是值的方式；
+** 对于其他对象：如果确实已经回收，那么就不能保留他们；
+** 对于那些正在执行析构的对象，以键的方式保留，而不是值的方式http://lua-users.org/lists/lua-l/2009-03/msg00438.html；
 ** o是NULL，则为非可回收对象，返回0；
 ** 字符串直接设为黑色，返回0；
 ** 通用返回是否是白色；
@@ -235,7 +236,7 @@ void luaC_barrier_ (lua_State *L, GCObject *o, GCObject *v) {
   else {  /* sweep phase 如果是在清理阶段，直接设置o为新白色，因为本身清理阶段也是将黑色变为新白色，不会去清理新白色的对象 */
     lua_assert(issweepphase(g));
     if (g->gckind == KGC_INC)  /* incremental mode? */
-      makewhite(g, o);  /* mark 'o' as white to avoid other barriers */
+      makewhite(g, o);  /* mark 'o' as white to avoid other barriers 标记额为白色，减少barrier的开销，后续再有对o的修改也不会触发luaC_barrier_了*/
   }
 }
 
@@ -317,7 +318,7 @@ GCObject *luaC_newobj (lua_State *L, int tt, size_t sz) {
 ** upvalues can call this function recursively, but this recursion goes
 ** for at most two levels: An upvalue cannot refer to another upvalue
 ** (only closures can), and a userdata's metatable must be a table.
-** 标记对象颜色
+** 标记对象颜色为黑色，或者灰色并加入gray中
 ** 黑色：没有用户值的userdata、字符串、关闭的upvalue；
 ** 开放的upvalue已经间接地被各自的thread引用在了twups里，所以不加入gray列表，但是也要标记为灰色，避免被屏障，因为他们会被重新访问remarkupvals；
 ** 其他对象置为灰色并加入gray链表并且在随后的访问的标记为黑色；
@@ -333,7 +334,7 @@ static void reallymarkobject (global_State *g, GCObject *o) {
     case LUA_VUPVAL: {
       UpVal *uv = gco2upv(o);
       if (upisopen(uv))
-        set2gray(uv);  /* open upvalues are kept gray */
+        set2gray(uv);  /* open upvalues are kept gray 开放的upvalue一直都是灰色 */
       else
         set2black(uv);  /* closed upvalues are visited here */
       markvalue(g, uv->v.p);  /* mark its content */
@@ -371,7 +372,8 @@ static void markmt (global_State *g) {
 
 /*
 ** mark all objects in list of being-finalized
-** 标记所有正在执行析构的对象
+** 标记所有正在执行析构的对象，变黑或放入gray中
+** 因为这些对象在调用析构函数_gc方法前是不能被回收的，而且它们引用到的其他gc可回收对象，不能在本轮gc中回收，所以需要不断的遍历mark;
 */
 static lu_mem markbeingfnz (global_State *g) {
   GCObject *o;
@@ -394,11 +396,19 @@ static lu_mem markbeingfnz (global_State *g) {
 ** the list, as it was already visited. Removes also threads with no
 ** upvalues, as they have nothing to be checked. (If the thread gets an
 ** upvalue later, it will be linked in the list again.)
-** 重新标记协程的开放upavlues
+** 重新标记协程的开放upavlues;
+** 对每个没有标记过的thread，也就是白色的，没有被引用的dead状态，对它里面的upvalue和指向的值模拟一个屏障；
+** 如果协程被回收了，upvalue的值会指向它自己的value，但那时候做屏障已经太迟了；
+** 同时把thread从twup里移除，因为已经访问过了，没有upvalues的thread也移除，因为它没有upvalue来做检查了，但如果它后续新增了upvalue，会被重新加入twup里；
+** 如何理解这里：有open upvalue的thread会放到twups里，但是访问的时候可能thread已经dead了，所以是白色，但如果它还有openupvalue呢？比如：在这个协程里
+** 定义了一个有openupvalue的函数，并在全局变量里引用了这个函数，那么这个函数会被访问并标记，同时他的upvalues也会被标记，但因为openupvalue是指向thread的栈里
+** 的对象，那么有可能在遍历后函数的upvalue变化了，比如local a = "xx";f被遍历标记；然后a在其他函数里被修改为a={},那么这个a需要被重新标记不能被回收。
+** 另外参考：https://www.cnblogs.com/lindx/p/17590730.html
 */
 static int remarkupvals (global_State *g) {
   lua_State *thread;
-  lua_State **p = &g->twups;
+  /* 加到twup里的都是有openupval的thread，但是thread有可能已经执行结束被设置为了nil，没有地方在引用它了、或者它里面的函数调用结束了，upvalue都被删除了 */
+  lua_State **p = &g->twups; 
   int work = 0;  /* estimate of how much work was done here */
   while ((thread = *p) != NULL) {
     work++;
@@ -408,13 +418,13 @@ static int remarkupvals (global_State *g) {
       UpVal *uv;
       lua_assert(!isold(thread) || thread->openupval == NULL);
       *p = thread->twups;  /* remove thread from the list */
-      thread->twups = thread;  /* mark that it is out of list */
+      thread->twups = thread;  /* mark that it is out of list 将twups指向自己来表示已从g里删除*/
       for (uv = thread->openupval; uv != NULL; uv = uv->u.open.next) {
         lua_assert(getage(uv) <= getage(thread));
         work++;
-        if (!iswhite(uv)) {  /* upvalue already visited? */
+        if (!iswhite(uv)) {  /* upvalue already visited? upvalue已经被访问过了 */
           lua_assert(upisopen(uv) && isgray(uv));
-          markvalue(g, uv->v.p);  /* mark its value */
+          markvalue(g, uv->v.p);  /* mark its value 标记upvalue里指向的对象，开放的upvalue都是在栈上 */
         }
       }
     }
@@ -422,7 +432,9 @@ static int remarkupvals (global_State *g) {
   return work;
 }
 
-
+/*
+** 重置所有gray和weaks的list为NULL
+*/
 static void cleargraylists (global_State *g) {
   g->gray = g->grayagain = NULL;
   g->weak = g->allweak = g->ephemeron = NULL;
@@ -431,6 +443,10 @@ static void cleargraylists (global_State *g) {
 
 /*
 ** mark root set and reset all gray lists, to start a new collection
+** 开始新一轮回收
+** 1、重置所有gray和weaks的list为NULL
+** 2、标记全局的mainthread、l_registry、mt
+** 3、标记正在析构的userdata,在g->tobefnz
 */
 static void restartcollection (global_State *g) {
   cleargraylists(g);
@@ -458,6 +474,7 @@ static void restartcollection (global_State *g) {
 ** TOUCHED1 objects need to be in the list. TOUCHED2 doesn't need to go
 ** back to a gray list, but then it must become OLD. (That is what
 ** 'correctgraylist' does when it finds a TOUCHED2 object.)
+** 分代的，可以暂时忽略
 */
 static void genlink (global_State *g, GCObject *o) {
   lua_assert(isblack(o));
@@ -474,26 +491,31 @@ static void genlink (global_State *g, GCObject *o) {
 ** propagate phase, keep it in 'grayagain' list, to be revisited in the
 ** atomic phase. In the atomic phase, if table has any white value,
 ** put it in 'weak' list, to be cleared.
+** h已被标记为黑色，遍历标记弱值表
+** 1、表中：值为空则设为deadkey，后续会被直接释放；值不为空，标记key为黑色，或者灰色并加入gray
+** 2、表中数组部分不标记，因为会加入weak或者grayagain，在atomic阶段遍历
+** 3、如果在传播阶段，直接放入grayagain，在atomic阶段一起遍历
+** 4、如果在atomic阶段并且(数组只要有值或者有白色的value)，就放入weak链表，在atomic阶段一起遍历
 */
 static void traverseweakvalue (global_State *g, Table *h) {
   Node *n, *limit = gnodelast(h);
   /* if there is array part, assume it may have white values (it is not
      worth traversing it now just to check) */
-  int hasclears = (h->alimit > 0);
+  int hasclears = (h->alimit > 0);  /* 因为是弱值，如果都没有被引用，那么都应该清理，所以数组不遍历，反正后续还会遍历 */
   for (n = gnode(h, 0); n < limit; n++) {  /* traverse hash part */
     if (isempty(gval(n)))  /* entry is empty? */
-      clearkey(n);  /* clear its key */
+      clearkey(n);  /* clear its key 值是空，可以清理，标记deadkey*/
     else {
       lua_assert(!keyisnil(n));
-      markkey(g, n);
+      markkey(g, n);  /* 只标记key,不主动标记弱值，key是否释放，根据最后的状态：是deadkey或者value是白色 */
       if (!hasclears && iscleared(g, gcvalueN(gval(n))))  /* a white value? */
         hasclears = 1;  /* table will have to be cleared */
     }
   }
   if (g->gcstate == GCSatomic && hasclears)
-    linkgclist(h, g->weak);  /* has to be cleared later */
+    linkgclist(h, g->weak);  /* has to be cleared later 改成灰色，放入弱值链表里 */
   else
-    linkgclist(h, g->grayagain);  /* must retraverse it in atomic phase */
+    linkgclist(h, g->grayagain);  /* must retraverse it in atomic phase 改成灰色，放入grayagin链表里 */
 }
 
 
@@ -508,15 +530,26 @@ static void traverseweakvalue (global_State *g, Table *h) {
 ** (in the atomic phase). In generational mode, some tables
 ** must be kept in some gray list for post-processing; this is done
 ** by 'genlink'.
+** h已被标记为黑色，遍历标记弱key表，返回是否有字段被标记过
+** 1、遍历标记数组部分，因为值是强引用，需要遍历，key对应数组的下标没有对象；
+** 2、表中：
+**    值为空则设为deadkey，后续会被直接释放；
+**    key被标记了的，值也执行标记为黑色，或者灰色放入gray中；
+**    key-value没被标记的，不做处理；
+**    key没被标记，值标记了，不做处理；
+** 3、放入哪个链表？
+**    传播阶段，放入grayagain中；
+**    只要有key-value都是白色，表变灰并放入ephemeron链表中，这里的白色不是真的就会释放的，它可能在后续的遍历中被改变；
+**    有白色的key，放入allweak中；
 */
 static int traverseephemeron (global_State *g, Table *h, int inv) {
-  int marked = 0;  /* true if an object is marked in this traversal */
+  int marked = 0;  /* true if an object is marked in this traversal 代表表里有没有值被标记过 */
   int hasclears = 0;  /* true if table has white keys */
   int hasww = 0;  /* true if table has entry "white-key -> white-value" */
   unsigned int i;
   unsigned int asize = luaH_realasize(h);
   unsigned int nsize = sizenode(h);
-  /* traverse array part */
+  /* traverse array part 标记数组的值为黑色、或者灰色并加入gray中 */
   for (i = 0; i < asize; i++) {
     if (valiswhite(&h->array[i])) {
       marked = 1;
@@ -528,72 +561,85 @@ static int traverseephemeron (global_State *g, Table *h, int inv) {
   for (i = 0; i < nsize; i++) {
     Node *n = inv ? gnode(h, nsize - 1 - i) : gnode(h, i);
     if (isempty(gval(n)))  /* entry is empty? */
-      clearkey(n);  /* clear its key */
-    else if (iscleared(g, gckeyN(n))) {  /* key is not marked (yet)? */
+      clearkey(n);  /* clear its key 值是空的，标记为deadkey */
+    else if (iscleared(g, gckeyN(n))) {  /* key is not marked (yet)? 这里key还是白色，有2种情况：都遍历完了没有被引用、还没遍历到它*/
       hasclears = 1;  /* table must be cleared */
-      if (valiswhite(gval(n)))  /* value not marked yet? */
+      if (valiswhite(gval(n)))  /* value not marked yet? 值也是白色，key-value都是白色时放入瞬表里*/
         hasww = 1;  /* white-white entry */
     }
-    else if (valiswhite(gval(n))) {  /* value not marked yet? */
+    else if (valiswhite(gval(n))) {  /* value not marked yet? 如果key被访问到标记了，说明key的对象被引用着，那么值也应该不能被释放*/
       marked = 1;
-      reallymarkobject(g, gcvalue(gval(n)));  /* mark it now */
+      reallymarkobject(g, gcvalue(gval(n)));  /* mark it now 值没有标记，那就标记颜色避免被清理*/
     }
   }
   /* link table into proper list */
   if (g->gcstate == GCSpropagate)
-    linkgclist(h, g->grayagain);  /* must retraverse it in atomic phase */
+    linkgclist(h, g->grayagain);  /* must retraverse it in atomic phase 传播阶段，变灰并放入grayagain中，在atomic中再遍历一次 */
   else if (hasww)  /* table has white->white entries? */
-    linkgclist(h, g->ephemeron);  /* have to propagate again */
-  else if (hasclears)  /* table has white keys? */
-    linkgclist(h, g->allweak);  /* may have to clean white keys */
+    linkgclist(h, g->ephemeron);  /* have to propagate again 有白色的key-value，变灰并放入瞬表，在atomic中再遍历一次 */
+  else if (hasclears)  /* table has white keys? 有白色的key，并且value被引用着，可能需要被清理*/
+    linkgclist(h, g->allweak);  /* may have to clean white keys 变灰并放入allweak中，在atomic中再遍历一次 */
   else
     genlink(g, obj2gco(h));  /* check whether collector still needs to see it */
   return marked;
 }
 
-
+/* 
+** h已经是黑色，遍历标记表h里所有引用的对象
+** h是强表，表示key和value都是强引用，遍历到h就要标记里面所有的内容
+** 1、标记所有数组里的值为黑色或者置灰并放入gray中
+** 2、标记所有hash里的值为黑色或者置灰并放入gray中、如果value为null，则标记为deadkey
+*/
 static void traversestrongtable (global_State *g, Table *h) {
   Node *n, *limit = gnodelast(h);
   unsigned int i;
   unsigned int asize = luaH_realasize(h);
-  for (i = 0; i < asize; i++)  /* traverse array part */
+  for (i = 0; i < asize; i++)  /* traverse array part 标记数组内所有对象为黑色或者置灰并放入gray中 */
     markvalue(g, &h->array[i]);
   for (n = gnode(h, 0); n < limit; n++) {  /* traverse hash part */
     if (isempty(gval(n)))  /* entry is empty? */
-      clearkey(n);  /* clear its key */
+      clearkey(n);  /* clear its key 标记空的key为dead，等清理阶段释放*/
     else {
       lua_assert(!keyisnil(n));
-      markkey(g, n);
-      markvalue(g, gval(n));
+      markkey(g, n); /* 标记key为黑色或者置灰并放入gray中 */
+      markvalue(g, gval(n));  /* 标记value为黑色或者置灰并放入gray中 */
     }
   }
   genlink(g, obj2gco(h));
 }
 
-
+/*
+** h已经是黑色，遍历标记表h引用的所有对象
+** 1、根据表的类型进行不同处理
+** 2、弱表有3种，会分别置灰放入不同的链表：弱key表->ephemeron、弱值表->weak、弱kv表-allweak，也可能放入grayagain中
+*/
 static lu_mem traversetable (global_State *g, Table *h) {
   const char *weakkey, *weakvalue;
-  const TValue *mode = gfasttm(g, h->metatable, TM_MODE);
+  const TValue *mode = gfasttm(g, h->metatable, TM_MODE); /* 获取弱表模式 */
   TString *smode;
-  markobjectN(g, h->metatable);
+  markobjectN(g, h->metatable); /* 标记元表及其引用对象,放进gray，下一次最先遍历 */
   if (mode && ttisshrstring(mode) &&  /* is there a weak mode? */
       (cast_void(smode = tsvalue(mode)),
        cast_void(weakkey = strchr(getshrstr(smode), 'k')),
        cast_void(weakvalue = strchr(getshrstr(smode), 'v')),
        (weakkey || weakvalue))) {  /* is really weak? */
-    if (!weakkey)  /* strong keys? */
+    if (!weakkey)  /* strong keys? 是k强v弱的weak表 */
       traverseweakvalue(g, h);
-    else if (!weakvalue)  /* strong values? */
+    else if (!weakvalue)  /* strong values? 是k弱v强的ephemeron瞬表*/
       traverseephemeron(g, h, 0);
-    else  /* all weak */
-      linkgclist(h, g->allweak);  /* nothing to traverse now */
+    else  /* all weak 是kv都弱的allweak表 */
+      linkgclist(h, g->allweak);  /* nothing to traverse now 把h变灰，放入allweak链表，等待atomic阶段遍历*/
   }
-  else  /* not weak */
-    traversestrongtable(g, h);
+  else  /* not weak 是kv都强引用的表 */
+    traversestrongtable(g, h); /* 强表的key和value都会被标记为黑色、或者灰色并加入gray中 */
   return 1 + h->alimit + 2 * allocsizenode(h);
 }
 
-
+/*
+** u是黑色，遍历标记u引用的对象
+** 1、标记metatable
+** 2、标记所有的userdata值
+*/
 static int traverseudata (global_State *g, Udata *u) {
   int i;
   markobjectN(g, u->metatable);  /* mark its metatable */
@@ -608,6 +654,11 @@ static int traverseudata (global_State *g, Udata *u) {
 ** Traverse a prototype. (While a prototype is being build, its
 ** arrays can be larger than needed; the extra slots are filled with
 ** NULL, so the use of 'markobjectN')
+** 标记函数原型里的对象，f为黑色
+** 1、标记source源码文件字符
+** 2、标记upvalue的名字字符
+** 3、标记嵌套的函数proto，标灰放入gray链表
+** 4、标记所有局部变量的名字字符
 */
 static int traverseproto (global_State *g, Proto *f) {
   int i;
@@ -623,7 +674,10 @@ static int traverseproto (global_State *g, Proto *f) {
   return 1 + f->sizek + f->sizeupvalues + f->sizep + f->sizelocvars;
 }
 
-
+/*
+** 标记C闭包里的对象，cl为黑色
+** 1、标记所有的UpVals，可能为黑色或者灰色，同时标记upval里存的值
+*/
 static int traverseCclosure (global_State *g, CClosure *cl) {
   int i;
   for (i = 0; i < cl->nupvalues; i++)  /* mark its upvalues */
@@ -634,6 +688,11 @@ static int traverseCclosure (global_State *g, CClosure *cl) {
 /*
 ** Traverse a Lua closure, marking its prototype and its upvalues.
 ** (Both can be NULL while closure is being created.)
+** 标记Lua闭包里的对象，cl为黑色
+** 1、标记Proto为灰色，并加入gray链表
+** 2、标记所有的UpVals，可能为黑色或者灰色，同时标记upval里存的值
+** 3、Proto和upval都可能为null，如果闭包正在被创建中，为什么会出现这种情况？
+**  因为：LClosure可能会逐步构建，初始new出来的时候，p和upvals都为NULL，后续逐步构建内容
 */
 static int traverseLclosure (global_State *g, LClosure *cl) {
   int i;
@@ -657,28 +716,35 @@ static int traverseLclosure (global_State *g, LClosure *cl) {
 ** these visits, threads must return to a gray list if they are not new
 ** (which can only happen in generational mode) or if the traverse is in
 ** the propagate phase (which can only happen in incremental mode).
+** 遍历标记thread类型的luaState，th为黑色
+** 1、如果stack还没初始化完成，不处理
+** 2、标记栈里的所有对象
+** 3、如果有开放的upvalue，标记所有的upvalue
+** 4、分阶段的处理：
+**    传播阶段：直接放入grayagain里，因为在传播阶段后续可能还会被修改，而stack上数据的修改是不经过write barrier的。也没有必要为最频繁的stack修改做barrier那样对性能影响就很大。
+**    atomic阶段：收缩stack，并且把top以后的都清空；有开放的upvalue但没有在g->twups中，放到twups中
 */
 static int traversethread (global_State *g, lua_State *th) {
   UpVal *uv;
   StkId o = th->stack.p;
   if (isold(th) || g->gcstate == GCSpropagate)
-    linkgclist(th, g->grayagain);  /* insert into 'grayagain' list */
+    linkgclist(th, g->grayagain);  /* insert into 'grayagain' list 标灰放入grayagain等atomic阶段再遍历一次 */
   if (o == NULL)
     return 1;  /* stack not completely built yet */
   lua_assert(g->gcstate == GCSatomic ||
              th->openupval == NULL || isintwups(th));
-  for (; o < th->top.p; o++)  /* mark live elements in the stack */
+  for (; o < th->top.p; o++)  /* mark live elements in the stack 标记栈里的对象*/
     markvalue(g, s2v(o));
   for (uv = th->openupval; uv != NULL; uv = uv->u.open.next)
-    markobject(g, uv);  /* open upvalues cannot be collected */
+    markobject(g, uv);  /* open upvalues cannot be collected 标记开放的upvalues*/
   if (g->gcstate == GCSatomic) {  /* final traversal? */
     if (!g->gcemergency)
       luaD_shrinkstack(th); /* do not change stack in emergency cycle */
     for (o = th->top.p; o < th->stack_last.p + EXTRA_STACK; o++)
-      setnilvalue(s2v(o));  /* clear dead stack slice */
+      setnilvalue(s2v(o));  /* clear dead stack slice 清理栈中未使用的部分 */
     /* 'remarkupvals' may have removed thread from 'twups' list */
     if (!isintwups(th) && th->openupval != NULL) {
-      th->twups = g->twups;  /* link it back to the list */
+      th->twups = g->twups;  /* link it back to the list 有开放的upvalue但没有在g->twups中，放进去,同时thread也是存活的*/
       g->twups = th;
     }
   }
@@ -688,6 +754,9 @@ static int traversethread (global_State *g, lua_State *th) {
 
 /*
 ** traverse one gray object, turning it to black.
+** 从g->gray中每次取出一个对象o，
+** 1、标记o为黑色,从gray里移除
+** 2、遍历标记o关联的所有对象，使用广度遍历
 */
 static lu_mem propagatemark (global_State *g) {
   GCObject *o = g->gray;
@@ -718,7 +787,11 @@ static lu_mem propagateall (global_State *g) {
 ** Repeat until it converges, that is, nothing new is marked. 'dir'
 ** inverts the direction of the traversals, trying to speed up
 ** convergence on chains in the same table.
-**
+** 遍历标记所有的瞬表，直到收敛，收敛的意思是所有的瞬表里都没有进行过标记操作了；
+** 因为瞬表是弱key表，它的值可能会被当做key，当该值被标记了，那么它作为key对应的value也要被标记；
+** 循环结束后的情况：
+** 1、g->ephemeron：里面可能还有瞬表，这些瞬表有key-value都是白色的entry，但已经没有什么标记的了；
+** 2、g->allweak：大部分在这里面，有白色的key的瞬表会放进去，但所有白色的key对应的value都已被标记过了，不然的话就是在g->ephemeron里；
 */
 static void convergeephemerons (global_State *g) {
   int changed;
@@ -731,10 +804,10 @@ static void convergeephemerons (global_State *g) {
     while ((w = next) != NULL) {  /* for each ephemeron table */
       Table *h = gco2t(w);
       next = h->gclist;  /* list is rebuilt during loop */
-      nw2black(h);  /* out of the list (for now) */
-      if (traverseephemeron(g, h, dir)) {  /* marked some value? */
+      nw2black(h);  /* out of the list (for now) 从灰色变为黑色，并从list中移除，避免重复标记，但它有可能在还会被放入ephemeron被继续遍历 */
+      if (traverseephemeron(g, h, dir)) {  /* marked some value? 有值被标记，有可能放入了gray链表中，继续清空gray */
         propagateall(g);  /* propagate changes */
-        changed = 1;  /* will have to revisit all ephemeron tables */
+        changed = 1;  /* will have to revisit all ephemeron tables 只要有一个瞬表有变化，那么就要重新遍历所有的瞬表 */
       }
     }
     dir = !dir;  /* invert direction next time */
@@ -753,6 +826,9 @@ static void convergeephemerons (global_State *g) {
 
 /*
 ** clear entries with unmarked keys from all weaktables in list 'l'
+** 遍历清理弱表里面key没有被标记的所有entry；
+** 1、key没有被标记，设置value为empty；
+** 2、value如果为empty，标记key为deadkey；
 */
 static void clearbykeys (global_State *g, GCObject *l) {
   for (; l; l = gco2t(l)->gclist) {
@@ -772,6 +848,9 @@ static void clearbykeys (global_State *g, GCObject *l) {
 /*
 ** clear entries with unmarked values from all weaktables in list 'l' up
 ** to element 'f'
+** 清理链表中所有没有被标记过的value，以及对应的key,没被标记过是指从gcroot遍历不到它，需要释放内存；
+** 数组部分：value没有被引用，直接设置为empty；
+** 哈希部分：value没有标记过，设置为empty，同时把key标记为deadkey；
 */
 static void clearbyvalues (global_State *g, GCObject *l, GCObject *f) {
   for (; l != f; l = gco2t(l)->gclist) {
@@ -793,14 +872,14 @@ static void clearbyvalues (global_State *g, GCObject *l, GCObject *f) {
   }
 }
 
-
+/* 释放upvalue的内存，如果是开放的upvalue，从openupvalue的链表中删除 */
 static void freeupval (lua_State *L, UpVal *uv) {
   if (upisopen(uv))
     luaF_unlinkupval(uv);
   luaM_free(L, uv);
 }
 
-
+/* 根据对象o的类型执行具体内存释放 */
 static void freeobj (lua_State *L, GCObject *o) {
   switch (o->tt) {
     case LUA_VPROTO:
@@ -852,6 +931,7 @@ static void freeobj (lua_State *L, GCObject *o) {
 ** white; change all non-dead objects back to white, preparing for next
 ** collection cycle. Return where to continue the traversal or NULL if
 ** list is finished. ('*countout' gets the number of elements traversed.)
+** 遍历释放链表里的白色对象，遍历countin次，返回countout个处理的对象个数
 */
 static GCObject **sweeplist (lua_State *L, GCObject **p, int countin,
                              int *countout) {
@@ -862,13 +942,13 @@ static GCObject **sweeplist (lua_State *L, GCObject **p, int countin,
   for (i = 0; *p != NULL && i < countin; i++) {
     GCObject *curr = *p;
     int marked = curr->marked;
-    if (isdeadm(ow, marked)) {  /* is 'curr' dead? */
-      *p = curr->next;  /* remove 'curr' from list */
+    if (isdeadm(ow, marked)) {  /* is 'curr' dead? 是之前的白色，说明没有引用了 */
+      *p = curr->next;  /* remove 'curr' from list 要释放的对象，把p指针里的内容设置为next，p的地址不会变 */
       freeobj(L, curr);  /* erase 'curr' */
     }
     else {  /* change mark to 'white' */
-      curr->marked = cast_byte((marked & ~maskgcbits) | white);
-      p = &curr->next;  /* go to next element */
+      curr->marked = cast_byte((marked & ~maskgcbits) | white); /* 设置新白色的标记 */
+      p = &curr->next;  /* go to next element 跳到下一个对象是通过p指向next的地址，p的地址会变 */
     }
   }
   if (countout)
@@ -879,12 +959,15 @@ static GCObject **sweeplist (lua_State *L, GCObject **p, int countin,
 
 /*
 ** sweep a list until a live object (or end of list)
+** 顺序清理链表，直到遇到存活的对象
 */
 static GCObject **sweeptolive (lua_State *L, GCObject **p) {
   GCObject **old = p;
   do {
     p = sweeplist(L, p, 1, NULL);
-  } while (p == old);
+  /* 因为每次都是从头部遍历一个对象，如果是清理，是把p指向的内容设置为了下一个，那么old的内容和p就是一样的；
+  如果是存活对象则会跳过，会修改p指向下一个指针的地址，这时候old和p就不同了*/
+  } while (p == old); /* 如果一直没有遇到存活的对象，继续释放一个 */
   return p;
 }
 
@@ -1002,6 +1085,7 @@ static GCObject **findlast (GCObject **p) {
 ** (Note that objects after 'finobjold1' cannot be white, so they
 ** don't need to be traversed. In incremental mode, 'finobjold1' is NULL,
 ** so the whole list is traversed.)
+** 把所有带有析构函数的可回收对象从finobj链表中移到tobefnz上，成为即将调用析构函数的对象
 */
 static void separatetobefnz (global_State *g, int all) {
   GCObject *curr;
@@ -1009,7 +1093,7 @@ static void separatetobefnz (global_State *g, int all) {
   GCObject **lastnext = findlast(&g->tobefnz);
   while ((curr = *p) != g->finobjold1) {  /* traverse all finalizable objects */
     lua_assert(tofinalize(curr));
-    if (!(iswhite(curr) || all))  /* not being collected? */
+    if (!(iswhite(curr) || all))  /* not being collected? 还引用着就表示还在使用，不需要处理 */
       p = &curr->next;  /* don't bother with it */
     else {
       if (curr == g->finobjsur)  /* removing 'finobjsur'? */
@@ -1514,6 +1598,9 @@ static void genstep (lua_State *L, global_State *g) {
 ** inside the list (instead of to the header), so that the real sweep do
 ** not need to skip objects created between "now" and the start of the
 ** real sweep.
+** 进入清理阶段；
+** 1、切换到清理状态；
+** 2、执行一次清理g->allgc，直到遇到第一个存活的对象；
 */
 static void entersweep (lua_State *L) {
   global_State *g = G(L);
@@ -1553,45 +1640,75 @@ void luaC_freeallobjects (lua_State *L) {
   lua_assert(g->strt.nuse == 0);
 }
 
-
+/* 原子标记阶段，需要一次性执行完，不能分步 */
 static lu_mem atomic (lua_State *L) {
   global_State *g = G(L);
   lu_mem work = 0;
   GCObject *origweak, *origall;
   GCObject *grayagain = g->grayagain;  /* save original list */
-  g->grayagain = NULL;
-  lua_assert(g->ephemeron == NULL && g->weak == NULL);
-  lua_assert(!iswhite(g->mainthread));
-  g->gcstate = GCSatomic;
-  markobject(g, L);  /* mark running thread */
-  /* registry and global metatables may be changed by API */
+  g->grayagain = NULL;  /* 为啥先清掉，因为后面的流程可能会添加对象进去，避免重复 */
+  lua_assert(g->ephemeron == NULL && g->weak == NULL); /* 为啥能成立?因为传播阶段是不会加到这2个链表里 */
+  lua_assert(!iswhite(g->mainthread)); /* 主state肯定已经被标灰了，不是的话就是流程异常了 */
+  g->gcstate = GCSatomic; 
+  /* 标记正在运行的协程,这里为什么会标记L？
+  ** 常规情况下，L==g->mainthread，即gc的step是在主state里触发的，这时L就是mainthread，前面mainthread已经标记过，所以这种情况L不会重复执行标记；
+  ** 还有2种情况下，L!=g->mainthread:
+  ** 1、lua中创建一个协程，在协程中创建新对象时，luaC_checkGC触发了gc的step，或者协程中主动调用了step；
+  **    这个时候L在mainthread的虚拟栈里，如果L在mainthread遍历过后才创建并执行的，那么L是白色，并不会在传播阶段被遍历到，所以这里要主动标记一次，因为它也不能被释放；
+  ** 2、在C中newthread，不会放到全局里，并且resume运行，如果函数内部触发了gc的step或者主动调用了step，这时L和mainthread也不同；
+  */
+  markobject(g, L);  /* mark running thread 标记正在运行的协程 */
+  /* registry and global metatables may be changed by API 注册表可能被C端开发者修改 */
   markvalue(g, &g->l_registry);
-  markmt(g);  /* mark global metatables */
-  work += propagateall(g);  /* empties 'gray' list */
-  /* remark occasional upvalues of (maybe) dead threads */
+  markmt(g);  /* mark global metatables 设置基本类型的全局metatable并没有设置 write barrier 在lua_setmetatable中*/
+  work += propagateall(g);  /* empties 'gray' list 前面3个标记可能加入gray中*/
+  /* remark occasional upvalues of (maybe) dead threads 重新标记可能已经是死亡状态的协程里的upvalues */
   work += remarkupvals(g);
-  work += propagateall(g);  /* propagate changes */
+  work += propagateall(g);  /* propagate changes remarkupvalues后gray可能有变化 */
   g->gray = grayagain;
-  work += propagateall(g);  /* traverse 'grayagain' list */
+  work += propagateall(g);  /* traverse 'grayagain' list 开始标记grayagain，该变的都变了，里面有弱表、瞬表、thread */
   convergeephemerons(g);
   /* at this point, all strongly accessible objects are marked. */
+  /* 到了这一步，所有强引用的对象都已经被标记过了 */
   /* Clear values from weak tables, before checking finalizers */
+  /* 先清理value没有被标记过的表，那种key没标记、value被标记的entry还未处理 */
   clearbyvalues(g, g->weak, NULL);
   clearbyvalues(g, g->allweak, NULL);
   origweak = g->weak; origall = g->allweak;
   separatetobefnz(g, 0);  /* separate objects to be finalized */
   work += markbeingfnz(g);  /* mark objects that will be finalized */
-  work += propagateall(g);  /* remark, to propagate 'resurrection' */
+  work += propagateall(g);  /* remark, to propagate 'resurrection' 清空gray */
+  /* 前面可能有finobj被标记过，这些finobj有可能引用到瞬表里的key或者value,所以又复活了，需要再收敛一边瞬表
+  ** 可以参考例子：https://www.cnblogs.com/lindx/p/17590725.html
+  **  local o1 = setmetatable({}, {__mode = "k"})
+      local o2 = setmetatable({}, {__mode = "k"})
+      local v1 = {}
+      local v2 = {}
+      local v3 = {}
+      o1[v1] = v2
+      o2[v2] = v3
+      local t = setmetatable({[v1] = "aaa"}, {__gc = function ( )
+	      print("__gc function call ...")
+      end})
+      v1 = nil
+      v2 = nil
+      v3 = nil
+      t = nil
+      collectgarbage() -- o1和o2还存活
+      collectgarbage() -- o1和o2不存在了
+  */
   convergeephemerons(g);
   /* at this point, all resurrected objects are marked. */
+  /* 到这一步，所有复活的对象都已经被标记了 */
   /* remove dead objects from weak tables */
   clearbykeys(g, g->ephemeron);  /* clear keys from all ephemeron tables */
   clearbykeys(g, g->allweak);  /* clear keys from all 'allweak' tables */
   /* clear values from resurrected weak tables */
+  /* 清理从保存origweak和origall到现在重新加到weak和allweak里面的对象，因为加入的对象都在头部，并且ori位置及后面的已经clearbyvalue了，所以只需要再清理新加的 */
   clearbyvalues(g, g->weak, origweak);
   clearbyvalues(g, g->allweak, origall);
   luaS_clearcache(g);
-  g->currentwhite = cast_byte(otherwhite(g));  /* flip current white */
+  g->currentwhite = cast_byte(otherwhite(g));  /* flip current white 翻转白色为另一个新对象的白色 */
   lua_assert(g->gray == NULL);
   return work;  /* estimate of slots marked by 'atomic' */
 }
@@ -1617,8 +1734,8 @@ static int sweepstep (lua_State *L, global_State *g,
 static lu_mem singlestep (lua_State *L) {
   global_State *g = G(L);
   lu_mem work;
-  lua_assert(!g->gcstopem);  /* collector is not reentrant */
-  g->gcstopem = 1;  /* no emergency collections while collecting */
+  lua_assert(!g->gcstopem);  /* collector is not reentrant 不能重入gc，如果gcstopem不为0，就是重入了*/
+  g->gcstopem = 1;  /* no emergency collections while collecting 表示正在执行gc中*/
   switch (g->gcstate) {
     case GCSpause: {
       restartcollection(g);
@@ -1626,9 +1743,9 @@ static lu_mem singlestep (lua_State *L) {
       work = 1;
       break;
     }
-    case GCSpropagate: {
+    case GCSpropagate: { /* 传播标记阶段 */
       if (g->gray == NULL) {  /* no more gray objects? */
-        g->gcstate = GCSenteratomic;  /* finish propagate phase */
+        g->gcstate = GCSenteratomic;  /* finish propagate phase 所有gray对象都标记为了黑色，或者加入了对应的链表里 */
         work = 0;
       }
       else
@@ -1637,7 +1754,7 @@ static lu_mem singlestep (lua_State *L) {
     }
     case GCSenteratomic: {
       work = atomic(L);  /* work is what was traversed by 'atomic' */
-      entersweep(L);
+      entersweep(L); /* 设置到清理阶段，并清理一次 */
       g->GCestimate = gettotalbytes(g);  /* first estimate */
       break;
     }

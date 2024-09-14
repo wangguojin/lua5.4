@@ -73,6 +73,7 @@ LUAI_DDEC(const char *const luaT_typenames_[LUA_TOTALTYPES];)
 
 LUAI_FUNC const char *luaT_objtypename (lua_State *L, const TValue *o);
 
+/* 快速获取元方法，只能获取<= TM_EQ的 */
 LUAI_FUNC const TValue *luaT_gettm (Table *events, TMS event, TString *ename);
 LUAI_FUNC const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o,
                                                        TMS event);

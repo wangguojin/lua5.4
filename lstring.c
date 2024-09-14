@@ -106,6 +106,7 @@ void luaS_resize (lua_State *L, int nsize) {
 /*
 ** Clear API string cache. (Entries cannot be empty, so fill them with
 ** a non-collectable string.)
+** 清理字符串缓存，设置值为永远不会被回收的memerrmsg对象
 */
 void luaS_clearcache (global_State *g) {
   int i, j;
@@ -161,13 +162,13 @@ TString *luaS_createlngstrobj (lua_State *L, size_t l) {
   return ts;
 }
 
-
+/* 从字符串缓存表里删除ts，先计算hash，再查找链表对象，找到就删除 */
 void luaS_remove (lua_State *L, TString *ts) {
   stringtable *tb = &G(L)->strt;
   TString **p = &tb->hash[lmod(ts->hash, tb->size)];
-  while (*p != ts)  /* find previous element */
+  while (*p != ts)  /* find previous element 找到链表上前面的结点 */
     p = &(*p)->u.hnext;
-  *p = (*p)->u.hnext;  /* remove element from its list */
+  *p = (*p)->u.hnext;  /* remove element from its list，赋值之前，p==&a->u.hnext,所以赋值：a->u.hnext = (a->u.hnext)->u.hnext*/
   tb->nuse--;
 }
 

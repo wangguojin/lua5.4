@@ -118,6 +118,7 @@ CallInfo *luaE_extendCI (lua_State *L) {
 
 /*
 ** free all CallInfo structures not in use by a thread
+** 释放thread里的所有callinfo
 */
 static void freeCI (lua_State *L) {
   CallInfo *ci = L->ci;
@@ -199,11 +200,11 @@ static void stack_init (lua_State *L1, lua_State *L) {
   L1->ci = ci;
 }
 
-
+/* 释放state的栈对象以及所有的callinfo */
 static void freestack (lua_State *L) {
   if (L->stack.p == NULL)
     return;  /* stack not completely built yet */
-  L->ci = &L->base_ci;  /* free the entire 'ci' list */
+  L->ci = &L->base_ci;  /* free the entire 'ci' list 从基地址开始释放 */
   freeCI(L);
   lua_assert(L->nci == 0);
   luaM_freearray(L, L->stack.p, stacksize(L) + EXTRA_STACK);  /* free stack */
@@ -309,7 +310,7 @@ LUA_API lua_State *lua_newthread (lua_State *L) {
   return L1;
 }
 
-
+/* 释放thread占用的内存:关闭openvalue、释放栈、释放自己 */
 void luaE_freethread (lua_State *L, lua_State *L1) {
   LX *l = fromstate(L1);
   luaF_closeupval(L1, L1->stack.p);  /* close all upvalues */
