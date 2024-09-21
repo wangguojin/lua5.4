@@ -85,6 +85,7 @@ static unsigned int luai_makeseed (lua_State *L) {
 /*
 ** set GCdebt to a new value keeping the value (totalbytes + GCdebt)
 ** invariant (and avoiding underflows in 'totalbytes')
+** 设置触发下一次gc的debt值，通常为负的estimate倍数，
 */
 void luaE_setdebt (global_State *g, l_mem debt) {
   l_mem tb = gettotalbytes(g);
@@ -395,7 +396,7 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   g->gray = g->grayagain = NULL;
   g->weak = g->ephemeron = g->allweak = NULL;
   g->twups = NULL;
-  g->totalbytes = sizeof(LG);
+  g->totalbytes = sizeof(LG); /* x64上：1552个字节 */
   g->GCdebt = 0;
   g->lastatomic = 0;
   setivalue(&g->nilvalue, 0);  /* to signal that state is not yet built */

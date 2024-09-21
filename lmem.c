@@ -197,7 +197,7 @@ void *luaM_saferealloc_ (lua_State *L, void *block, size_t osize,
   return newblock;
 }
 
-
+/* 最终分配内存的接口，分配的字节数会累加到GCdebt中 */
 void *luaM_malloc_ (lua_State *L, size_t size, int tag) {
   if (size == 0)
     return NULL;  /* that's all */

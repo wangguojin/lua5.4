@@ -195,8 +195,9 @@ static int pushmode (lua_State *L, int oldmode) {
 ** check whether call to 'lua_gc' was valid (not inside a finalizer)
 */
 #define checkvalres(res) { if (res == -1) break; }
-
+/* 根据参数执行gc */
 static int luaB_collectgarbage (lua_State *L) {
+  /* 所有可选参数及对应枚举 */
   static const char *const opts[] = {"stop", "restart", "collect",
     "count", "step", "setpause", "setstepmul",
     "isrunning", "generational", "incremental", NULL};
@@ -205,11 +206,11 @@ static int luaB_collectgarbage (lua_State *L) {
     LUA_GCISRUNNING, LUA_GCGEN, LUA_GCINC};
   int o = optsnum[luaL_checkoption(L, 1, "collect", opts)];
   switch (o) {
-    case LUA_GCCOUNT: {
-      int k = lua_gc(L, o);
-      int b = lua_gc(L, LUA_GCCOUNTB);
+    case LUA_GCCOUNT: { /* 返回当前占用的内存总量 */
+      int k = lua_gc(L, o); /* 多少k */
+      int b = lua_gc(L, LUA_GCCOUNTB); /* 不足1k的，b/1024,计算小数部分，是0.xkb */
       checkvalres(k);
-      lua_pushnumber(L, (lua_Number)k + ((lua_Number)b/1024));
+      lua_pushnumber(L, (lua_Number)k + ((lua_Number)b/1024)); /* 加起来就是总的kb内存 */
       return 1;
     }
     case LUA_GCSTEP: {

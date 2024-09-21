@@ -1144,39 +1144,40 @@ LUA_API int lua_status (lua_State *L) {
 
 /*
 ** Garbage-collection function
+** 垃圾回收对外接口，根据参数执行不同操作
 */
 LUA_API int lua_gc (lua_State *L, int what, ...) {
   va_list argp;
   int res = 0;
   global_State *g = G(L);
-  if (g->gcstp & GCSTPGC)  /* internal stop? */
+  if (g->gcstp & GCSTPGC)  /* internal stop? 内部自己停止的 */
     return -1;  /* all options are invalid when stopped */
   lua_lock(L);
   va_start(argp, what);
   switch (what) {
     case LUA_GCSTOP: {
-      g->gcstp = GCSTPUSR;  /* stopped by the user */
+      g->gcstp = GCSTPUSR;  /* stopped by the user 用户自己停止了 */
       break;
     }
-    case LUA_GCRESTART: {
+    case LUA_GCRESTART: { /* 重启gc，把debt置为0，只要有对象分配就会触发gcstep，并标记gcrunning */
       luaE_setdebt(g, 0);
       g->gcstp = 0;  /* (GCSTPGC must be already zero here) */
       break;
     }
-    case LUA_GCCOLLECT: {
+    case LUA_GCCOLLECT: { /* 一次全量gc */
       luaC_fullgc(L, 0);
       break;
     }
     case LUA_GCCOUNT: {
       /* GC values are expressed in Kbytes: #bytes/2^10 */
-      res = cast_int(gettotalbytes(g) >> 10);
+      res = cast_int(gettotalbytes(g) >> 10); /* 返回总的kb内存，丢弃了小于1k的部分 */
       break;
     }
     case LUA_GCCOUNTB: {
-      res = cast_int(gettotalbytes(g) & 0x3ff);
+      res = cast_int(gettotalbytes(g) & 0x3ff); /* 计算1k内的部分 */
       break;
     }
-    case LUA_GCSTEP: {
+    case LUA_GCSTEP: { /* 单步gcstep，可以传字节大小进来，如果没传，那么执行常规的单步gc；如果有传，加到debt上 */
       int data = va_arg(argp, int);
       l_mem debt = 1;  /* =1 to signal that it did an actual step */
       lu_byte oldstp = g->gcstp;
@@ -1195,19 +1196,19 @@ LUA_API int lua_gc (lua_State *L, int what, ...) {
         res = 1;  /* signal it */
       break;
     }
-    case LUA_GCSETPAUSE: {
+    case LUA_GCSETPAUSE: { /* 设置gcpause参数,返回原值 */
       int data = va_arg(argp, int);
       res = getgcparam(g->gcpause);
       setgcparam(g->gcpause, data);
       break;
     }
-    case LUA_GCSETSTEPMUL: {
+    case LUA_GCSETSTEPMUL: { /* 设置gc步进倍数，返回原值 */
       int data = va_arg(argp, int);
       res = getgcparam(g->gcstepmul);
       setgcparam(g->gcstepmul, data);
       break;
     }
-    case LUA_GCISRUNNING: {
+    case LUA_GCISRUNNING: { /* gc是否在运行 */
       res = gcrunning(g);
       break;
     }
@@ -1222,7 +1223,7 @@ LUA_API int lua_gc (lua_State *L, int what, ...) {
       luaC_changemode(L, KGC_GEN);
       break;
     }
-    case LUA_GCINC: {
+    case LUA_GCINC: { /* 设置增量gc模式，传入pasue、stepmul、stepsize参数 */
       int pause = va_arg(argp, int);
       int stepmul = va_arg(argp, int);
       int stepsize = va_arg(argp, int);

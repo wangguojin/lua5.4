@@ -58,7 +58,7 @@ unsigned int luaS_hashlongstr (TString *ts) {
   return ts->hash;
 }
 
-
+/* 重新计算数组大小变化后的hash */
 static void tablerehash (TString **vect, int osize, int nsize) {
   int i;
   for (i = osize; i < nsize; i++)  /* clear new elements */
@@ -81,6 +81,7 @@ static void tablerehash (TString **vect, int osize, int nsize) {
 ** Resize the string table. If allocation fails, keep the current size.
 ** (This can degrade performance, but any non-zero size should work
 ** correctly.)
+** strt表扩容或者收缩
 */
 void luaS_resize (lua_State *L, int nsize) {
   stringtable *tb = &G(L)->strt;

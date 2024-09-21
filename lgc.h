@@ -22,6 +22,11 @@
 ** can be visited again before finishing the collection cycle. (Open
 ** upvalues are an exception to this rule.)  These lists have no meaning
 ** when the invariant is not being enforced (e.g., sweep phase).
+** 可回收对象有3种颜色，白色：还未被标记；灰色：被标记了，但是他的引用还没被标记；
+** 黑色：自己以及所有引用的对象都已被标记；
+** 主要规则：黑色不能指向白色对象；
+** 此外，灰色对象必须在gray链表里,以至于他们能够在gc结束前被再次访问到（开放的upvalue除外）；
+** 如果不遵循主要规则，那么这些链表都没有意义，例如清理阶段；
 */
 
 
@@ -49,6 +54,9 @@
 ** phase may break the invariant, as objects turned white may point to
 ** still-black objects. The invariant is restored when sweep ends and
 ** all objects are white again.
+** 哪个阶段必须要保持主要规则：在swpallgc阶段之前；
+** 在回收期间，清理阶段可能打破这个规则，因为对象变成白色之后可能指向始终保持黑色的对象；
+** 当清理结束并且所有对象都变回白色后，主规则又恢复了；
 */
 
 #define keepinvariant(g)	((g)->gcstate <= GCSatomic)
@@ -75,7 +83,7 @@
 #define WHITE0BIT	3  /* object is white (type 0) */
 #define WHITE1BIT	4  /* object is white (type 1) */
 #define BLACKBIT	5  /* object is black */
-#define FINALIZEDBIT	6  /* object has been marked for finalization */
+#define FINALIZEDBIT	6  /* object has been marked for finalization 标记对象有析构函数 */
 
 #define TESTBIT		7
 
@@ -88,17 +96,18 @@
 #define isblack(x)      testbit((x)->marked, BLACKBIT)
 #define isgray(x)  /* neither white nor black */  \
 	(!testbits((x)->marked, WHITEBITS | bitmask(BLACKBIT)))
-
+/* 检查是否已经标记过了 */
 #define tofinalize(x)	testbit((x)->marked, FINALIZEDBIT)
 
 #define otherwhite(g)	((g)->currentwhite ^ WHITEBITS)
 #define isdeadm(ow,m)	((m) & (ow))
 #define isdead(g,v)	isdeadm(otherwhite(g), (v)->marked)
-
+/* 改变成白色标记 */
 #define changewhite(x)	((x)->marked ^= WHITEBITS)
+/* not white to black color */
 #define nw2black(x)  \
 	check_exp(!iswhite(x), l_setbit((x)->marked, BLACKBIT))
-
+/* 获取当前的白色 */
 #define luaC_white(g)	cast_byte((g)->currentwhite & WHITEBITS)
 
 
@@ -125,19 +134,20 @@
 #define LUAI_GENMAJORMUL         100
 #define LUAI_GENMINORMUL         20
 
-/* wait memory to double before starting new cycle */
+/* wait memory to double before starting new cycle 默认的gcpause参数 */
 #define LUAI_GCPAUSE    200
 
 /*
 ** some gc parameters are stored divided by 4 to allow a maximum value
-** up to 1023 in a 'lu_byte'.
+** up to 1023 in a 'lu_byte'. 只是为了扩大数值范围，byte只能表示256个数，byte*4能表示1024个数，0-1023
 */
 #define getgcparam(p)	((p) * 4)
 #define setgcparam(p,v)	((p) = (v) / 4)
-
+/* gc的速度默认值 */
 #define LUAI_GCMUL      100
 
 /* how much to allocate before next GC step (log2) */
+/* gc的粒度，控制单步step循环的退出，即单步处理对象的最低大小，同时也是下一次step触发的最低内存分配量 */
 #define LUAI_GCSTEPSIZE 13      /* 8 KB */
 
 
@@ -155,6 +165,7 @@
 #define GCSTPUSR	1  /* bit true when GC stopped by user */
 #define GCSTPGC		2  /* bit true when GC stopped by itself */
 #define GCSTPCLS	4  /* bit true when closing Lua state */
+/* 为0表示在运行中 */
 #define gcrunning(g)	((g)->gcstp == 0)
 
 
@@ -163,12 +174,14 @@
 ** allows some adjustments to be done only when needed. macro
 ** 'condchangemem' is used only for heavy tests (forcing a full
 ** GC cycle on every opportunity)
+** 判断debt>0，是的话触发单步gc
 */
 #define luaC_condGC(L,pre,pos) \
 	{ if (G(L)->GCdebt > 0) { pre; luaC_step(L); pos;}; \
 	  condchangemem(L,pre,pos); }
 
 /* more often than not, 'pre'/'pos' are empty */
+/* 判断debt>0，是的话触发单步gc */
 #define luaC_checkGC(L)		luaC_condGC(L,(void)0,(void)0)
 
 /* 前向和后向的区别：前向适用于不会频繁改变引用关系的数据类型，如Lua的proto结构；后向适用于会出现频繁改变引用关系情况的数据类型，如Lua的表结构

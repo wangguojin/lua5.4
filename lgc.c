@@ -49,6 +49,7 @@
 /*
 ** The equivalent, in bytes, of one unit of "work" (visiting a slot,
 ** sweeping an object, etc.)
+** x64:16个字节
 */
 #define WORK2MEM	sizeof(TValue)
 
@@ -102,6 +103,7 @@
 /*
 ** mark an object that can be NULL (either because it is really optional,
 ** or it was stripped as debug info, or inside an uncompleted structure)
+** 标记可能为NULL的对象
 */
 #define markobjectN(g,t)	{ if (t) markobject(g,t); }
 
@@ -932,6 +934,7 @@ static void freeobj (lua_State *L, GCObject *o) {
 ** collection cycle. Return where to continue the traversal or NULL if
 ** list is finished. ('*countout' gets the number of elements traversed.)
 ** 遍历释放链表里的白色对象，遍历countin次，返回countout个处理的对象个数
+** 返回值:下次需要访问的对象的next字段地址
 */
 static GCObject **sweeplist (lua_State *L, GCObject **p, int countin,
                              int *countout) {
@@ -982,6 +985,7 @@ static GCObject **sweeptolive (lua_State *L, GCObject **p) {
 
 /*
 ** If possible, shrink string table.
+** 检查strt缓存表的大小，如果空余太多，进行缩容
 */
 static void checkSizes (lua_State *L, global_State *g) {
   if (!g->gcemergency) {
@@ -997,12 +1001,14 @@ static void checkSizes (lua_State *L, global_State *g) {
 /*
 ** Get the next udata to be finalized from the 'tobefnz' list, and
 ** link it back into the 'allgc' list.
+** 从tobefnz链表里获取一个对象：从tobefnz里移除、放回allgc中、如果在清理阶段就标记为白色
+** tobefnz里的对象，在这次gc中只调用析构函数，不会释放，下一次gc才释放
 */
 static GCObject *udata2finalize (global_State *g) {
   GCObject *o = g->tobefnz;  /* get first element */
   lua_assert(tofinalize(o));
   g->tobefnz = o->next;  /* remove it from 'tobefnz' list */
-  o->next = g->allgc;  /* return it to 'allgc' list */
+  o->next = g->allgc;  /* return it to 'allgc' list 下次gc再释放对象 */
   g->allgc = o;
   resetbit(o->marked, FINALIZEDBIT);  /* object is "normal" again */
   if (issweepphase(g))
@@ -1012,20 +1018,22 @@ static GCObject *udata2finalize (global_State *g) {
   return o;
 }
 
-
+/* 调用析构函数_gc, 不允许在调用链中有yield调用,2个参数，没有返回值 */
 static void dothecall (lua_State *L, void *ud) {
   UNUSED(ud);
   luaD_callnoyield(L, L->top.p - 2, 0);
 }
 
-
+/* 从tobefnz获取对象，并pcall析构函数_gc
+** 调用前要保存些状态用于恢复
+*/
 static void GCTM (lua_State *L) {
   global_State *g = G(L);
   const TValue *tm;
   TValue v;
   lua_assert(!g->gcemergency);
-  setgcovalue(L, &v, udata2finalize(g));
-  tm = luaT_gettmbyobj(L, &v, TM_GC);
+  setgcovalue(L, &v, udata2finalize(g)); /* 获取对象并保存在v里 */
+  tm = luaT_gettmbyobj(L, &v, TM_GC); /* 获取_gc元方法 */
   if (!notm(tm)) {  /* is there a finalizer? */
     int status;
     lu_byte oldah = L->allowhook;
@@ -1033,7 +1041,7 @@ static void GCTM (lua_State *L) {
     g->gcstp |= GCSTPGC;  /* avoid GC steps */
     L->allowhook = 0;  /* stop debug hooks during GC metamethod */
     setobj2s(L, L->top.p++, tm);  /* push finalizer... */
-    setobj2s(L, L->top.p++, &v);  /* ... and its argument */
+    setobj2s(L, L->top.p++, &v);  /* ... and its argument 参数是它自己 */
     L->ci->callstatus |= CIST_FIN;  /* will run a finalizer */
     status = luaD_pcall(L, dothecall, NULL, savestack(L, L->top.p - 2), 0);
     L->ci->callstatus &= ~CIST_FIN;  /* not running a finalizer anymore */
@@ -1049,6 +1057,7 @@ static void GCTM (lua_State *L) {
 
 /*
 ** Call a few finalizers
+** 最多n个对象析构
 */
 static int runafewfinalizers (lua_State *L, int n) {
   global_State *g = G(L);
@@ -1060,7 +1069,7 @@ static int runafewfinalizers (lua_State *L, int n) {
 
 
 /*
-** call all pending finalizers
+** call all pending finalizers 调用所有对象的析构函数
 */
 static void callallpendingfinalizers (lua_State *L) {
   global_State *g = G(L);
@@ -1071,6 +1080,7 @@ static void callallpendingfinalizers (lua_State *L) {
 
 /*
 ** find last 'next' field in list 'p' list (to add elements in its end)
+** 查找p所在链表的最后一个对象的next字段地址，并返回指向next地址的指针
 */
 static GCObject **findlast (GCObject **p) {
   while (*p != NULL)
@@ -1109,6 +1119,7 @@ static void separatetobefnz (global_State *g, int all) {
 
 /*
 ** If pointer 'p' points to 'o', move it to the next element.
+** 分代-忽略
 */
 static void checkpointer (GCObject **p, GCObject *o) {
   if (o == *p)
@@ -1119,6 +1130,7 @@ static void checkpointer (GCObject **p, GCObject *o) {
 /*
 ** Correct pointers to objects inside 'allgc' list when
 ** object 'o' is being removed from the list.
+** 分代-忽略
 */
 static void correctpointers (global_State *g, GCObject *o) {
   checkpointer(&g->survival, o);
@@ -1131,6 +1143,8 @@ static void correctpointers (global_State *g, GCObject *o) {
 /*
 ** if object 'o' has a finalizer, remove it from 'allgc' list (must
 ** search the list to find it) and link it in 'finobj' list.
+** 如果o有析构函数，那么从allgc里移除，加到finobj中；
+** 在allgc中查找有消耗：最好一开始就把所有对象的析构函数设置好，不要动态添加；
 */
 void luaC_checkfinalizer (lua_State *L, GCObject *o, Table *mt) {
   global_State *g = G(L);
@@ -1141,18 +1155,18 @@ void luaC_checkfinalizer (lua_State *L, GCObject *o, Table *mt) {
   else {  /* move 'o' to 'finobj' list */
     GCObject **p;
     if (issweepphase(g)) {
-      makewhite(g, o);  /* "sweep" object 'o' */
-      if (g->sweepgc == &o->next)  /* should not remove 'sweepgc' object */
+      makewhite(g, o);  /* "sweep" object 'o' 如果是在清理阶段，标记为新白色不被清理 */
+      if (g->sweepgc == &o->next)  /* should not remove 'sweepgc' object 如果当前的sweepgc正指向o，跳过o，让它指向后面的存活对象 */
         g->sweepgc = sweeptolive(L, g->sweepgc);  /* change 'sweepgc' */
     }
     else
       correctpointers(g, o);
-    /* search for pointer pointing to 'o' */
+    /* search for pointer pointing to 'o' 这里要在allgc里查找，消耗挺大，所以最好一开始就把所有对象的析构函数设置好，不要动态添加 */
     for (p = &g->allgc; *p != o; p = &(*p)->next) { /* empty */ }
-    *p = o->next;  /* remove 'o' from 'allgc' list */
-    o->next = g->finobj;  /* link it in 'finobj' list */
+    *p = o->next;  /* remove 'o' from 'allgc' list 从allgc里删除 */
+    o->next = g->finobj;  /* link it in 'finobj' list 加到finobj中，头部 */
     g->finobj = o;
-    l_setbit(o->marked, FINALIZEDBIT);  /* mark it as such */
+    l_setbit(o->marked, FINALIZEDBIT);  /* mark it as such 标记有析构函数 */
   }
 }
 
@@ -1171,17 +1185,19 @@ void luaC_checkfinalizer (lua_State *L, GCObject *o, Table *mt) {
 ** start when memory use hits the threshold of ('estimate' * pause /
 ** PAUSEADJ). (Division by 'estimate' should be OK: it cannot be zero,
 ** because Lua cannot even start with less than PAUSEADJ bytes).
+** 根据一次gc后，当前所有对象的总内存来计算下一次gc触发的debt内存量；
+** gcpause默认是200，threshold下一次gc触发的预算总内存
 */
 static void setpause (global_State *g) {
   l_mem threshold, debt;
   int pause = getgcparam(g->gcpause);
-  l_mem estimate = g->GCestimate / PAUSEADJ;  /* adjust 'estimate' */
+  l_mem estimate = g->GCestimate / PAUSEADJ;  /* adjust 'estimate' 为了和gcpause参数一致的倍数 */
   lua_assert(estimate > 0);
   threshold = (pause < MAX_LMEM / estimate)  /* overflow? */
             ? estimate * pause  /* no overflow */
             : MAX_LMEM;  /* overflow; truncate to maximum */
   debt = gettotalbytes(g) - threshold;
-  if (debt > 0) debt = 0;
+  if (debt > 0) debt = 0; /* 如果大于0，强制设置为0，避免下一帧马上又执行gcstep，等到有新内存申请时才触发 */
   luaE_setdebt(g, debt);
 }
 
@@ -1191,6 +1207,7 @@ static void setpause (global_State *g) {
 ** objects and turns the non dead to old. All non-dead threads---which
 ** are now old---must be in a gray list. Everything else is not in a
 ** gray list. Open upvalues are also kept gray.
+** 分代-忽略
 */
 static void sweep2old (lua_State *L, GCObject **p) {
   GCObject *curr;
@@ -1227,6 +1244,7 @@ static void sweep2old (lua_State *L, GCObject **p) {
 ** here, because these old-generation objects are usually not swept
 ** here.  They will all be advanced in 'correctgraylist'. That function
 ** will also remove objects turned white here from any gray list.
+** 分代-忽略
 */
 static GCObject **sweepgen (lua_State *L, global_State *g, GCObject **p,
                             GCObject *limit, GCObject **pfirstold1) {
@@ -1268,6 +1286,7 @@ static GCObject **sweepgen (lua_State *L, global_State *g, GCObject **p,
 ** Traverse a list making all its elements white and clearing their
 ** age. In incremental mode, all objects are 'new' all the time,
 ** except for fixed strings (which are always old).
+** 把链表里的所有对象都标记为白色
 */
 static void whitelist (global_State *g, GCObject *p) {
   int white = luaC_white(g);
@@ -1284,6 +1303,7 @@ static void whitelist (global_State *g, GCObject *p) {
 ** 'TOUCHED1' objects are advanced to 'TOUCHED2' and remain on the list;
 ** Non-white threads also remain on the list; 'TOUCHED2' objects become
 ** regular old; they and anything else are removed from the list.
+** 分代-忽略
 */
 static GCObject **correctgraylist (GCObject **p) {
   GCObject *curr;
@@ -1317,6 +1337,7 @@ static GCObject **correctgraylist (GCObject **p) {
 
 /*
 ** Correct all gray lists, coalescing them into 'grayagain'.
+** 分代-忽略
 */
 static void correctgraylists (global_State *g) {
   GCObject **list = correctgraylist(&g->grayagain);
@@ -1333,6 +1354,7 @@ static void correctgraylists (global_State *g) {
 ** Mark black 'OLD1' objects when starting a new young collection.
 ** Gray objects are already in some gray list, and so will be visited
 ** in the atomic step.
+** 分代-忽略
 */
 static void markold (global_State *g, GCObject *from, GCObject *to) {
   GCObject *p;
@@ -1349,6 +1371,7 @@ static void markold (global_State *g, GCObject *from, GCObject *to) {
 
 /*
 ** Finish a young-generation collection.
+** 分代-忽略
 */
 static void finishgencycle (lua_State *L, global_State *g) {
   correctgraylists(g);
@@ -1363,6 +1386,7 @@ static void finishgencycle (lua_State *L, global_State *g) {
 ** Does a young collection. First, mark 'OLD1' objects. Then does the
 ** atomic step. Then, sweep all lists and advance pointers. Finally,
 ** finish the collection.
+** 分代-忽略
 */
 static void youngcollection (lua_State *L, global_State *g) {
   GCObject **psurvival;  /* to point to first non-dead survival object */
@@ -1404,6 +1428,7 @@ static void youngcollection (lua_State *L, global_State *g) {
 ** generational mode. The sweeps remove dead objects and turn all
 ** surviving objects to old. Threads go back to 'grayagain'; everything
 ** else is turned black (not in any gray list).
+** 分代-忽略
 */
 static void atomic2gen (lua_State *L, global_State *g) {
   cleargraylists(g);
@@ -1441,6 +1466,7 @@ static void setminordebt (global_State *g) {
 ** to ensure that all objects are correctly marked and weak tables
 ** are cleared. Then, turn all objects into old and finishes the
 ** collection.
+** 分代-忽略
 */
 static lu_mem entergen (lua_State *L, global_State *g) {
   lu_mem numobjs;
@@ -1457,6 +1483,7 @@ static lu_mem entergen (lua_State *L, global_State *g) {
 ** Enter incremental mode. Turn all objects white, make all
 ** intermediate lists point to NULL (to avoid invalid pointers),
 ** and go to the pause state.
+** 切换到增量gc模式时做的一些清理和初始化工作
 */
 static void enterinc (global_State *g) {
   whitelist(g, g->allgc);
@@ -1472,6 +1499,7 @@ static void enterinc (global_State *g) {
 
 /*
 ** Change collector mode to 'newmode'.
+** 修改gc的执行模式
 */
 void luaC_changemode (lua_State *L, int newmode) {
   global_State *g = G(L);
@@ -1487,6 +1515,7 @@ void luaC_changemode (lua_State *L, int newmode) {
 
 /*
 ** Does a full collection in generational mode.
+** 分代-忽略
 */
 static lu_mem fullgen (lua_State *L, global_State *g) {
   enterinc(g);
@@ -1514,6 +1543,7 @@ static lu_mem fullgen (lua_State *L, global_State *g) {
 ** number of objects traversed (returned by 'atomic') as a proxy. The
 ** field 'g->lastatomic' keeps this count from the last collection.
 ** ('g->lastatomic != 0' also means that the last collection was bad.)
+** 分代-忽略
 */
 static void stepgenfull (lua_State *L, global_State *g) {
   lu_mem newatomic;  /* count of traversed objects */
@@ -1554,6 +1584,7 @@ static void stepgenfull (lua_State *L, global_State *g) {
 **
 ** 'GCdebt <= 0' means an explicit call to GC step with "size" zero;
 ** in that case, do a minor collection.
+** 分代-忽略
 */
 static void genstep (lua_State *L, global_State *g) {
   if (g->lastatomic != 0)  /* last collection was a bad one? */
@@ -1613,6 +1644,7 @@ static void entersweep (lua_State *L) {
 /*
 ** Delete all objects in list 'p' until (but not including) object
 ** 'limit'.
+** 释放链表p里：从头到limit为止的所有对象
 */
 static void deletelist (lua_State *L, GCObject *p, GCObject *limit) {
   while (p != limit) {
@@ -1626,6 +1658,7 @@ static void deletelist (lua_State *L, GCObject *p, GCObject *limit) {
 /*
 ** Call all finalizers of the objects in the given Lua state, and
 ** then free all objects, except for the main thread.
+** 关闭luastate时做的释放操作
 */
 void luaC_freeallobjects (lua_State *L) {
   global_State *g = G(L);
@@ -1713,7 +1746,9 @@ static lu_mem atomic (lua_State *L) {
   return work;  /* estimate of slots marked by 'atomic' */
 }
 
-
+/* 遍历释放sweepgc里的所有白色对象，每次最多访问GCSWEEPMAX个
+** 如果遍历完了，则进入下个状态
+*/
 static int sweepstep (lua_State *L, global_State *g,
                       int nextstate, GCObject **nextlist) {
   if (g->sweepgc) {
@@ -1730,7 +1765,7 @@ static int sweepstep (lua_State *L, global_State *g,
   }
 }
 
-
+/* 核心的单步状态流程 */
 static lu_mem singlestep (lua_State *L) {
   global_State *g = G(L);
   lu_mem work;
@@ -1776,7 +1811,7 @@ static lu_mem singlestep (lua_State *L) {
       work = 0;
       break;
     }
-    case GCScallfin: {  /* call remaining finalizers */
+    case GCScallfin: {  /* call remaining finalizers 分步执行自定义的gc析构对象 */
       if (g->tobefnz && !g->gcemergency) {
         g->gcstopem = 0;  /* ok collections during finalizers */
         work = runafewfinalizers(L, GCFINMAX) * GCFINALIZECOST;
@@ -1812,6 +1847,8 @@ void luaC_runtilstate (lua_State *L, int statesmask) {
 ** running single steps until adding that many units of work or
 ** finishing a cycle (pause state). Finally, it sets the debt that
 ** controls when next step will be performed.
+** g->gcstepmul默认值是100、g->gcstepsize默认值是13，对应2^13=8192,即8kb、g->gcpause默认值是200
+** 见fullinc的注解
 */
 static void incstep (lua_State *L, global_State *g) {
   int stepmul = (getgcparam(g->gcstepmul) | 1);  /* avoid division by 0 */
@@ -1835,6 +1872,7 @@ static void incstep (lua_State *L, global_State *g) {
 ** Performs a basic GC step if collector is running. (If collector is
 ** not running, set a reasonable debt to avoid it being called at
 ** every single check.)
+** 执行一次gc步进：如果已经在gc中，那么正常step一次；如果gc没运行，设置个固定的debt，避免每次调用step的时候都执行
 */
 void luaC_step (lua_State *L) {
   global_State *g = G(L);
@@ -1855,10 +1893,40 @@ void luaC_step (lua_State *L) {
 ** there may be some objects marked as black, so the collector has
 ** to sweep all objects to turn them back to white (as white has not
 ** changed, nothing will be collected).
+** g->gcstepmul默认值是100、g->gcstepsize默认值是13，对应2^13=8192,即8kb、g->gcpause默认值是200
+** 举例看这几个变量的变化过程：
+** 假设初始创建了state之后，totalbytes = sizeof(LG); x64上：1552个字节；GCdebt=0;
+** 创建2个空的table，GCdebt=56*2=112，其中一个设置为nil，让gc进行回收，手动调用一次fullgc；
+** 执行到atomic阶段之后，会计算一次GCestimate = gettotalbytes(g) = 1552 + 112 = 1664;
+** 之后是sweap释放阶段，nil的table内存会被释放，那么GCdebt=56，GCestimate=1664-56=1608；
+** 执行完callfin之后，满足GCestimate == gettotalbytes(g)，都是1608；
+** 调用setpause：pause=800;estimate = g->GCestimate / PAUSEADJ = 16;threshold=16*800=12800;
+** debt = 1608-12800=-11192;
+** 调用setdebt：tb=1608，不满足debt<tb-MAX_LMEM条件，那么totalbytes=1608+11192=12800；GCdebt=-11192；
+** 那么下一次gcstep自动触发的条件是GCdebt>0,也就是说在至少分配了11192个字节后，会触发gcstep；
+** 调用incstep：
+**  1、假如这期间申请了700个TValue对象，此时，GCdebt=700*16-11192=8；
+**     stepmul=401,debt=0,stepsize=512*401=205312,
+**     执行do循环，debt一直减小，一直到debt<-205312或者pause了，按这里的数值计算，会到pause退出，因为分配的新字节数小于stepsize的，
+**     又调用setpause，重新计算值，加入700个对象全回收，再计算的值和之前一样；
+**  2、假如这期间申请了相当于1000个TValue对象，此时，GCdebt=1000*16-11192=4808
+**     stepmul=401,debt=4808*401=1928008,stepsize=512*401=205312;
+**     执行do循环，debt一直减小,假如满足debt<-stepsize退出，说明对象较多，单步回收不完；
+**     重新计算下一次step的debt：假如退出do时，debt=-205328，则，debt=（-205328/401）*16=-8192；
+**     又调用setdebt；
+**  GCdebt：初始为0，大于0的时候触发单步gc，这之后一直保持负数，新分配的内存值累加到上面，直到大于0触发step，为负数表示允许分配多少内存才触发gcstep；
+**  gcstepmul:执行单步回收的内存大小倍数，值越大，单次处理的对象就越多，耗时就越长；
+**  gcpause：每次gc执行完后会调用setpause，计算下一次gc触发的debt，这个值越大，那么下次gcstep触发的debt就越大，通常是当前内存值得倍数，
+**           比如200时，debt=-estimate，totalbytes=2*estimate，即新分配的内存等于上一次gc后还占用的总内存时，触发新一轮gc；
+**  执行完一次gc后： GCestimate == gettotalbytes(g)，
+** 执行一次全量gc
+** 1、如果当前在atomic阶段之前，那么跳过atomic状态，进入allgc阶段，并一直执行到pause阶段，把所有对象恢复成白色，因为没有执行atomic就不会翻转白色；
+** 2、开启新的一轮gc，会跳过propagate这个传播标记阶段，因为atomic阶段会遍历完所有对象；所以当分步执行的时候，propagate阶段分步标记了对象，可以减轻atomic的压力；
+** 3、调用setpause，计算下一次gc触发的debt；
 */
 static void fullinc (lua_State *L, global_State *g) {
-  if (keepinvariant(g))  /* black objects? */
-    entersweep(L); /* sweep everything to turn them back to white */
+  if (keepinvariant(g))  /* black objects? 如果是还在标记阶段 */
+    entersweep(L); /* sweep everything to turn them back to white 全部 */
   /* finish any pending sweep phase to start a new cycle */
   luaC_runtilstate(L, bitmask(GCSpause));
   luaC_runtilstate(L, bitmask(GCSpropagate));  /* start new cycle */
@@ -1875,6 +1943,8 @@ static void fullinc (lua_State *L, global_State *g) {
 ** Performs a full GC cycle; if 'isemergency', set a flag to avoid
 ** some operations which could change the interpreter state in some
 ** unexpected ways (running finalizers and shrinking some structures).
+** 执行一次全量gc；
+** emergency collection：当内存分配失败时，会强制执行一次完整的紧急垃圾收集，然后再尝试分配
 */
 void luaC_fullgc (lua_State *L, int isemergency) {
   global_State *g = G(L);

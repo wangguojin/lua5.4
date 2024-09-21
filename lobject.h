@@ -45,6 +45,7 @@
 
 /*
 ** Union of all Lua values
+** 64位平台:sizeof(Value) = 16
 */
 typedef union Value {
   struct GCObject *gc;    /* collectable objects */
@@ -381,7 +382,7 @@ typedef struct GCObject {
 
 
 /*
-** Header for a string value.
+** Header for a string value.x64上：24个字节
 */
 typedef struct TString {
   CommonHeader;
@@ -733,7 +734,7 @@ typedef union Node {
 #define setrealasize(t)		((t)->flags &= cast_byte(~BITRAS))
 #define setnorealasize(t)	((t)->flags |= BITRAS)
 
-
+/* x64上：56个字节 */
 typedef struct Table {
   CommonHeader;
   lu_byte flags;  /* 1<<p means tagmethod(p) is not present 位运算标识有哪些元方法，为1表示没有 */

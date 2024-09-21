@@ -272,10 +272,10 @@ typedef struct global_State {
   lua_Alloc frealloc;  /* function to reallocate memory */
   void *ud;         /* auxiliary data to 'frealloc' */
   l_mem totalbytes;  /* number of bytes currently allocated - GCdebt */
-  l_mem GCdebt;  /* bytes allocated not yet compensated by the collector */
+  l_mem GCdebt;  /* bytes allocated not yet compensated by the collector 已分配并且没有经过gc回收计算的总内存数，通常都是负的estimate倍数  */
   lu_mem GCestimate;  /* an estimate of the non-garbage memory in use 仍在使用中的对象的总内存预估 */
   lu_mem lastatomic;  /* see function 'genstep' in file 'lgc.c' */
-  stringtable strt;  /* hash table for strings */
+  stringtable strt;  /* hash table for strings 短字符串缓存 */
   TValue l_registry;
   TValue nilvalue;  /* a nil value */
   unsigned int seed;  /* randomized seed for hashes */
@@ -287,9 +287,9 @@ typedef struct global_State {
   lu_byte genmajormul;  /* control for major generational collections */
   lu_byte gcstp;  /* control whether GC is running */
   lu_byte gcemergency;  /* true if this is an emergency collection */
-  lu_byte gcpause;  /* size of pause between successive GCs */
-  lu_byte gcstepmul;  /* GC "speed" */
-  lu_byte gcstepsize;  /* (log2 of) GC granularity */
+  lu_byte gcpause;  /* size of pause between successive GCs 下一轮gc开启时内存需要达到的倍数*100，默认是200 */
+  lu_byte gcstepmul;  /* GC "speed" 控制单步gc的处理量，值越大，单次循环处理的对象越大，单步时间越长 */
+  lu_byte gcstepsize;  /* (log2 of) GC granularity gc的粒度，控制单步step循环的退出，即单步处理对象的最低大小，同时也是下一次step触发的最低内存分配量 */
   GCObject *allgc;  /* list of all collectable objects */
   GCObject **sweepgc;  /* current position of sweep in list */
   GCObject *finobj;  /* list of collectable objects with finalizers 带有析构函数的可回收对象 */
@@ -407,7 +407,9 @@ union GCUnion {
 #define obj2gco(v)	check_exp((v)->tt >= LUA_TSTRING, &(cast_u(v)->gc))
 
 
-/* actual number of total bytes allocated */
+/* actual number of total bytes allocated 
+** 所有当前对象的总内存，要分析lua当前占用的内存量就用它，collectgarbage("count")也是用这个值计算的 
+*/
 #define gettotalbytes(g)	cast(lu_mem, (g)->totalbytes + (g)->GCdebt)
 
 LUAI_FUNC void luaE_setdebt (global_State *g, l_mem debt);
