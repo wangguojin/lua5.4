@@ -654,12 +654,17 @@ LUALIB_API char *luaL_buffinitsize (lua_State *L, luaL_Buffer *B, size_t sz) {
 */
 
 /* index of free-list header (after the predefined values) */
+/* 前面2个分别是lua main state、G，所以从第3个开始，这也是固定的存放freelist的位置 */
 #define freelist	(LUA_RIDX_LAST + 1)
 
 /*
 ** The previously freed references form a linked list:
 ** t[freelist] is the index of a first free index, or zero if list is
 ** empty; t[t[freelist]] is the index of the second element; etc.
+** 之前释放的引用会形成一个链表：t[freelist]里面存的是表头索引，如果表为空就是0；t[t[freelist]]存的是第2个空位置的索引
+** 例如:0|0|4|"a"|5|nil
+**      0 1 2  3  4 5
+** 如上ref和unref后，t[fresslist]=t[2]->t[4]->t[5]
 */
 LUALIB_API int luaL_ref (lua_State *L, int t) {
   int ref;
@@ -668,35 +673,35 @@ LUALIB_API int luaL_ref (lua_State *L, int t) {
     return LUA_REFNIL;  /* 'nil' has a unique fixed reference */
   }
   t = lua_absindex(L, t);
-  if (lua_rawgeti(L, t, freelist) == LUA_TNIL) {  /* first access? */
+  if (lua_rawgeti(L, t, freelist) == LUA_TNIL) {  /* first access? 获取t[freelist]的值，放入栈顶，如果为nil */
     ref = 0;  /* list is empty */
     lua_pushinteger(L, 0);  /* initialize as an empty list */
-    lua_rawseti(L, t, freelist);  /* ref = t[freelist] = 0 */
+    lua_rawseti(L, t, freelist);  /* ref = t[freelist] = 0  第一次获取，返回0 */
   }
   else {  /* already initialized */
     lua_assert(lua_isinteger(L, -1));
     ref = (int)lua_tointeger(L, -1);  /* ref = t[freelist] */
   }
-  lua_pop(L, 1);  /* remove element from stack */
+  lua_pop(L, 1);  /* remove element from stack 值已经存在了ref中，把它从栈顶移除 */
   if (ref != 0) {  /* any free element? */
     lua_rawgeti(L, t, ref);  /* remove it from list */
-    lua_rawseti(L, t, freelist);  /* (t[freelist] = t[ref]) */
+    lua_rawseti(L, t, freelist);  /* (t[freelist] = t[ref]) t[freelist]里存放下一个索引 */
   }
   else  /* no free elements */
-    ref = (int)lua_rawlen(L, t) + 1;  /* get a new reference */
-  lua_rawseti(L, t, ref);
+    ref = (int)lua_rawlen(L, t) + 1;  /* get a new reference 长度+1，并设置 */
+  lua_rawseti(L, t, ref); /* 把栈顶的对象保存到t[ref]中,关联上引用 */
   return ref;
 }
 
-
+/* 释放对t[ref]里对象的引用 */
 LUALIB_API void luaL_unref (lua_State *L, int t, int ref) {
   if (ref >= 0) {
     t = lua_absindex(L, t);
     lua_rawgeti(L, t, freelist);
     lua_assert(lua_isinteger(L, -1));
-    lua_rawseti(L, t, ref);  /* t[ref] = t[freelist] */
+    lua_rawseti(L, t, ref);  /* t[ref] = t[freelist] 把freelist的链表头索引设置到新位置上 */
     lua_pushinteger(L, ref);
-    lua_rawseti(L, t, freelist);  /* t[freelist] = ref */
+    lua_rawseti(L, t, freelist);  /* t[freelist] = ref freelist里保存新的表头索引 */
   }
 }
 

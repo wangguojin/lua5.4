@@ -214,6 +214,9 @@ static void freestack (lua_State *L) {
 
 /*
 ** Create registry table and its predefined values
+** 初始化全局注册表：是只有数组数据，初始化长度为2
+** r[0]:当前的主线程对象lua state；
+** r[1]:全局的G表；
 */
 static void init_registry (lua_State *L, global_State *g) {
   /* create registry */

@@ -668,6 +668,7 @@ l_sinline int auxgetstr (lua_State *L, const TValue *t, const char *k) {
 ** indices in the registry were inserted right when the registry
 ** was created and never removed, they must always be in the array
 ** part of the registry.
+** 获取注册表里的全局G表
 */
 #define getGtable(L)  \
 	(&hvalue(&G(L)->l_registry)->array[LUA_RIDX_GLOBALS - 1])
