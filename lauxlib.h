@@ -137,6 +137,7 @@ LUALIB_API void (luaL_requiref) (lua_State *L, const char *modname,
 	((void)(luai_likely(cond) || luaL_typeerror(L, (arg), (tname))))
 
 #define luaL_checkstring(L,n)	(luaL_checklstring(L, (n), NULL))
+/* 尝试获取栈索引n里的字符串，如果不是字符串就返回默认值d */
 #define luaL_optstring(L,n,d)	(luaL_optlstring(L, (n), (d), NULL))
 
 #define luaL_typename(L,i)	lua_typename(L, lua_type(L,(i)))

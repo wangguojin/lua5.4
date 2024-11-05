@@ -320,13 +320,13 @@ static int luaB_ipairs (lua_State *L) {
   return 3;
 }
 
-
+/* status为ok时，把envidx指定的表设置为第一个upvalue，即_ENV上 */
 static int load_aux (lua_State *L, int status, int envidx) {
   if (l_likely(status == LUA_OK)) {
-    if (envidx != 0) {  /* 'env' parameter? */
-      lua_pushvalue(L, envidx);  /* environment for loaded function */
-      if (!lua_setupvalue(L, -2, 1))  /* set it as 1st upvalue */
-        lua_pop(L, 1);  /* remove 'env' if not used by previous call */
+    if (envidx != 0) {  /* 'env' parameter? 有值 */
+      lua_pushvalue(L, envidx);  /* environment for loaded function 把栈索引envidx的值压入栈顶 */
+      if (!lua_setupvalue(L, -2, 1))  /* set it as 1st upvalue 把栈顶值设置到第一个upvalue值上 */
+        lua_pop(L, 1);  /* remove 'env' if not used by previous call 失败的话要弹出env值 */
     }
     return 1;
   }
@@ -384,21 +384,28 @@ static const char *generic_reader (lua_State *L, void *ud, size_t *size) {
   return lua_tolstring(L, RESERVEDSLOT, size);
 }
 
-
+/* 从字符串或者文件中加载代码块chunk 
+参数1：chunk：字符串或者函数，如果是函数的话必须是返回字符串的函数，会一直调用直到返回nil表示chunk结束；
+参数2：chunkname：设置chunk的名字，用于调试信息，默认值或者是‘=(load)’；
+参数3：mode：字符或者字节码，默认是“bt”；
+参数4：env：指定chunk的第一个upvalue全局环境；
+返回：编译的代码函数在栈顶、可能的error
+*/
 static int luaB_load (lua_State *L) {
   int status;
   size_t l;
-  const char *s = lua_tolstring(L, 1, &l);
+  const char *s = lua_tolstring(L, 1, &l); /* 读取第一个参数，字符串或者reader函数 */
   const char *mode = luaL_optstring(L, 3, "bt");
   int env = (!lua_isnone(L, 4) ? 4 : 0);  /* 'env' index or 0 if no 'env' */
   if (s != NULL) {  /* loading a string? */
-    const char *chunkname = luaL_optstring(L, 2, s);
+    const char *chunkname = luaL_optstring(L, 2, s);/* 读取第二个参数，name */
     status = luaL_loadbufferx(L, s, l, chunkname, mode);
   }
   else {  /* loading from a reader function */
-    const char *chunkname = luaL_optstring(L, 2, "=(load)");
-    luaL_checktype(L, 1, LUA_TFUNCTION);
-    lua_settop(L, RESERVEDSLOT);  /* create reserved slot */
+    const char *chunkname = luaL_optstring(L, 2, "=(load)");/* 读取第二个参数，name */
+    luaL_checktype(L, 1, LUA_TFUNCTION);/* 校验第一个参数必须是函数 */
+    lua_settop(L, RESERVEDSLOT);  /* create reserved slot 扩展栈的top，并且这个slot值里来存放读取的临时字符串 */
+    /* 不断读取字符串，直到解析完;load也会设置第一个upvalue，即_ENV=_G，所以顶层函数里调用_ENV时，会编译成指令GETUPVAL 1 0 _ENV */
     status = lua_load(L, generic_reader, NULL, chunkname, mode);
   }
   return load_aux(L, status, env);
