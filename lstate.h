@@ -192,14 +192,17 @@ typedef struct stringtable {
 ** before the function starts or after it ends.
 */
 struct CallInfo {
-  StkIdRel func;  /* function index in the stack */
-  StkIdRel	top;  /* top for this function */
+  StkIdRel func;  /* function index in the stack 当前ci的func在栈里的位置 */
+  StkIdRel	top;  /* top for this function 当前ci的top栈顶位置*/
   struct CallInfo *previous, *next;  /* dynamic call link */
   union {
     struct {  /* only for Lua functions */
       const Instruction *savedpc;
       volatile l_signalT trap;  /* function is tracing lines/counts */
-      int nextraargs;  /* # of extra arguments in vararg functions */
+      /*根据调用时传入和参数和参数定义来确定,例如:f(a,b ...)，f(1,2,3,4,5),那么nextraargs=3；
+      可变参数在栈里的位置：在func位置之下，第一个是在(func-nextraargs)，所以这个版本函数调用的压栈顺序是：可变参数、函数func、固定参数
+      */
+      int nextraargs;  /* # of extra arguments in vararg functions 可变参数的个数 */
     } l;
     struct {  /* only for C functions */
       lua_KFunction k;  /* continuation in case of yields */

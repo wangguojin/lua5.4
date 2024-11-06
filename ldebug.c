@@ -180,7 +180,7 @@ static const char *upvalname (const Proto *p, int uv) {
   else return getstr(s);
 }
 
-
+/* 查找并返回可变参数，n是负数，从-1开始，因可变参数先于func入栈，所以可变参数位置计算ci->func.p - nextra - (n + 1) */
 static const char *findvararg (CallInfo *ci, int n, StkId *pos) {
   if (clLvalue(s2v(ci->func.p))->p->is_vararg) {
     int nextra = ci->u.l.nextraargs;
